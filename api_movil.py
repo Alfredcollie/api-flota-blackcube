@@ -7,15 +7,17 @@ import re
 from datetime import datetime
 from conexion import conectar_db
 from google import genai
+from google.genai import types
 
 # --- CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL ---
-cliente_ia = genai.Client(api_key="AQ.Ab8RN6K8rjTq3EKi2Jcpn9lUum2fdHz51wOuelOIoGolE0uzjQ")
+# ⚠️ REEMPLAZA con tu API Key real de Google AI Studio (Empieza con AIza...)
+cliente_ia = genai.Client(api_key="AQ.Ab8RN6KTR-IvzpzPC0p6tMWChrzVQjyE1Y0lGQn7zXyOOSGsLg")
 # ---------------------------------------------------
 
 app = FastAPI(title="API - Flota Automotriz Black Cube")
 
 # =================================================================
-# 1. MÓDULO DE LECTURA DE TICKETS (Intacto)
+# 1. MÓDULO DE LECTURA DE TICKETS
 # =================================================================
 @app.post("/subir-ticket/")
 async def subir_ticket_grifo(
@@ -43,10 +45,15 @@ async def subir_ticket_grifo(
         
         try:
             print(f"🤖 IA Analizando el ticket de la placa {placa}...")
-            archivo_ia = {'mime_type': foto.content_type, 'data': foto_bytes}
+            
+            # Formato oficial para enviar bytes de imagen en el nuevo SDK
+            parte_imagen = types.Part.from_bytes(
+                data=foto_bytes,
+                mime_type=foto.content_type
+            )
             
             prompt = """
-            Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en la imagen. Bajo ninguna circunstancia copies los datos de ejemplo. Extrae la información en formato JSON estricto:
+            Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en la imagen. Extrae la información en formato JSON estricto:
             - "numero_documento": (El número de serie y correlativo exacto impreso)
             - "subtotal": (solo el número decimal)
             - "igv": (solo el número decimal)
@@ -58,7 +65,11 @@ async def subir_ticket_grifo(
             - "direccion": (La dirección del comprobante)
             """
             
-            respuesta = cliente_ia.models.generate_content(model='gemini-1.5-flash', contents=[archivo_ia, prompt])
+            respuesta = cliente_ia.models.generate_content(
+                model='gemini-2.5-flash', 
+                contents=[parte_imagen, prompt]
+            )
+            
             match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
             
             if match:
@@ -109,7 +120,7 @@ async def subir_ticket_grifo(
             conn.commit()
         except Exception: conn.rollback() 
 
-        descripcion_final = f"Combustible: {tipo_combustible}"
+        descripcion_final = f"Combustible: {tipo_combustible} | Cant: {cantidad_combustible}"
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
         tipo_doc_final = "Factura (18% IGV)" if numero_doc.startswith("F") else "Boleta / Ticket"
         
@@ -147,12 +158,11 @@ async def subir_ticket_grifo(
         conn.close()
 
 # =================================================================
-# 2. MÓDULO DE GPS Y ASISTENCIA (NUEVO)
+# 2. MÓDULO DE GPS Y ASISTENCIA
 # =================================================================
 
 @app.get("/geocerca-config/")
 async def obtener_geocerca():
-    """El celular llama aquí al encenderse para saber dónde queda la oficina."""
     conn = conectar_db()
     if not conn:
         raise HTTPException(status_code=500, detail="Error de BD")
@@ -163,13 +173,12 @@ async def obtener_geocerca():
         if res:
             return {"latitud": float(res[0]), "longitud": float(res[1]), "radio": float(res[2])}
         else:
-            return {"latitud": -12.046374, "longitud": -77.042793, "radio": 100.0} # Defecto Lima
+            return {"latitud": -12.046374, "longitud": -77.042793, "radio": 100.0}
     finally:
         conn.close()
 
 @app.post("/registrar-asistencia/")
 async def registrar_asistencia(placa: str = Form(...), evento: str = Form(...)):
-    """El celular llama aquí automáticamente cuando entra o sale del radio."""
     conn = conectar_db()
     if not conn:
         raise HTTPException(status_code=500, detail="Error de BD")
@@ -179,18 +188,13 @@ async def registrar_asistencia(placa: str = Form(...), evento: str = Form(...)):
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
         hora_actual = datetime.now().strftime("%H:%M:%S")
         placa = placa.upper().strip()
-        evento = evento.upper().strip() # "ENTRADA" o "SALIDA"
+        evento = evento.upper().strip()
 
-        # Buscar si ya hay un registro hoy para esta placa
         cursor.execute("SELECT id, hora_entrada, hora_salida FROM registro_asistencia WHERE placa = %s AND fecha = %s", (placa, fecha_hoy))
         registro = cursor.fetchone()
 
         if evento == "ENTRADA":
-            if registro:
-                # Si ya existe, NO pisamos la hora_entrada original.
-                pass 
-            else:
-                # Primer ingreso del día
+            if not registro:
                 cursor.execute("""
                     INSERT INTO registro_asistencia (placa, fecha, hora_entrada, hora_salida, estado) 
                     VALUES (%s, %s, %s, %s, %s)
@@ -198,11 +202,9 @@ async def registrar_asistencia(placa: str = Form(...), evento: str = Form(...)):
                 
         elif evento == "SALIDA":
             if registro:
-                # Actualizamos la hora de salida (si sale varias veces, siempre pisa con la última)
                 id_reg = registro[0]
                 cursor.execute("UPDATE registro_asistencia SET hora_salida = %s, estado = %s WHERE id = %s", (hora_actual, "En Ruta", id_reg))
             else:
-                # Salió pero nunca registró entrada (quizás durmió en la base)
                 cursor.execute("""
                     INSERT INTO registro_asistencia (placa, fecha, hora_entrada, hora_salida, estado) 
                     VALUES (%s, %s, %s, %s, %s)
