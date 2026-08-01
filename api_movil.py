@@ -4,19 +4,21 @@ import base64
 import os
 import json
 import re
-import urllib.request
-import urllib.parse
-import urllib.error
 from datetime import datetime
 from conexion import conectar_db
+from google import genai
+from google.genai import types
 
-# ---------------------------------------------------
-# 🚀 CLAVE GRATUITA DE OPENROUTER (SIN TARJETA)
-OPENROUTER_API_KEY = "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"
+# --- CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL ---
+# ⚠️ REEMPLAZA con tu API Key real de Google AI Studio (Empieza con AIza...)
+cliente_ia = genai.Client(api_key="AQ.Ab8RN6L65ALTegttI-XpZ3S8cISh1aYQJ6XiFVdyBR8wfpmAxw")
 # ---------------------------------------------------
 
 app = FastAPI(title="API - Flota Automotriz Black Cube")
 
+# =================================================================
+# 1. MÓDULO DE LECTURA DE TICKETS
+# =================================================================
 @app.post("/subir-ticket/")
 async def subir_ticket_grifo(
     placa: str = Form(...),
@@ -42,113 +44,54 @@ async def subir_ticket_grifo(
         direccion_ia = ""
         
         try:
-            print(f"🤖 IA Iniciando análisis para la placa {placa}...")
+            print(f"🤖 IA Analizando el ticket de la placa {placa}...")
             
-            prompt_texto = """
-            Eres un auditor experto. Lee la imagen de este comprobante/ticket de combustible y extrae la información en formato JSON estricto:
-            {
-              "numero_documento": "Número de comprobante impreso (ej. F001-1234)",
-              "subtotal": 0.00,
-              "igv": 0.00,
-              "total": 0.00,
-              "tipo_combustible": "Tipo de combustible (ej. Diesel, Gasohol)",
-              "cantidad": "Cantidad en galones/litros",
-              "proveedor": "Nombre de la empresa o grifo",
-              "ruc": "RUC de 11 dígitos",
-              "direccion": "Dirección fiscal del grifo"
-            }
-            Responde ÚNICAMENTE con el objeto JSON, nada más.
+            # Formato oficial para enviar bytes de imagen en el nuevo SDK
+            parte_imagen = types.Part.from_bytes(
+                data=foto_bytes,
+                mime_type=foto.content_type
+            )
+            
+            prompt = """
+            Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en la imagen. Extrae la información en formato JSON estricto:
+            - "numero_documento": (El número de serie y correlativo exacto impreso)
+            - "subtotal": (solo el número decimal)
+            - "igv": (solo el número decimal)
+            - "total": (solo el número decimal)
+            - "tipo_combustible": (ej. Diesel, Gasohol 95)
+            - "cantidad": (ej. 10.500 GAL)
+            - "proveedor": (El nombre del establecimiento comercial)
+            - "ruc": (Los 11 dígitos del RUC)
+            - "direccion": (La dirección del comprobante)
             """
-
-            headers = {
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://blackcube.com",
-                "X-Title": "FlotaApp"
-            }
-
-            # 🚀 SISTEMA DE RESPALDO AUTOMÁTICO (FALLBACK)
-            # Intentará con estos modelos gratuitos en orden hasta que uno funcione
-            modelos_gratuitos = [
-                "google/gemini-2.0-flash-lite-preview-02-05:free",
-                "google/gemini-exp-1206:free",
-                "meta-llama/llama-3.2-11b-vision-instruct:free",
-                "qwen/qwen-2-vl-7b-instruct:free"
-            ]
-
-            texto_respuesta = None
-            ultimo_error = ""
-
-            for modelo in modelos_gratuitos:
-                print(f"🔄 Intentando con el modelo gratuito: {modelo}...")
-                payload = {
-                    "model": modelo,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt_texto},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{foto_b64}"
-                                    }
-                                }
-                            ]
-                        }
-                    ]
-                }
-
-                req = urllib.request.Request(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers=headers,
-                    method="POST"
-                )
-
-                try:
-                    with urllib.request.urlopen(req, timeout=30) as response:
-                        res_data = json.loads(response.read().decode("utf-8"))
-                        texto_respuesta = res_data["choices"][0]["message"]["content"]
-                        print(f"✅ ¡Éxito! El modelo {modelo} procesó la imagen.")
-                        break  # Salimos del bucle porque ya funcionó
-                except urllib.error.HTTPError as he:
-                    error_body = he.read().decode("utf-8")
-                    ultimo_error = error_body
-                    print(f"⚠️ El modelo {modelo} falló o está ocupado. Saltando al siguiente...")
-                    continue # Pasa al siguiente modelo de la lista
-                except Exception as e:
-                    ultimo_error = str(e)
-                    print(f"⚠️ Error de conexión con {modelo}. Saltando al siguiente...")
-                    continue
-
-            if not texto_respuesta:
-                raise ValueError(f"Todos los servidores gratuitos están ocupados en este momento. Intenta en unos minutos. Último error: {ultimo_error}")
-
-            # Procesamos el JSON devuelto por el modelo ganador
-            match = re.search(r'\{.*\}', texto_respuesta, re.DOTALL)
+            
+            respuesta = cliente_ia.models.generate_content(
+                model='gemini-1.5-flash', 
+                contents=[parte_imagen, prompt]
+            )
+            
+            match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
+            
             if match:
                 datos_ia = json.loads(match.group(0))
-                numero_doc = str(datos_ia.get("numero_documento", "POR-ASIGNAR"))
-                subtotal_monto = float(datos_ia.get("subtotal", 0.0) or 0.0)
-                igv_monto = float(datos_ia.get("igv", 0.0) or 0.0)
-                total_monto = float(datos_ia.get("total", 0.0) or 0.0)
-                tipo_combustible = str(datos_ia.get("tipo_combustible", "NO INDICA"))
-                cantidad_combustible = str(datos_ia.get("cantidad", "0"))
-                proveedor_ia = str(datos_ia.get("proveedor", "GRIFO (Desde App)")).upper()
-                ruc_ia = str(datos_ia.get("ruc", ""))
-                direccion_ia = str(datos_ia.get("direccion", "Dirección no indicada"))
-
+                numero_doc = datos_ia.get("numero_documento", "POR-ASIGNAR")
+                subtotal_monto = float(datos_ia.get("subtotal", 0.0))
+                igv_monto = float(datos_ia.get("igv", 0.0))
+                total_monto = float(datos_ia.get("total", 0.0))
+                tipo_combustible = datos_ia.get("tipo_combustible", "NO INDICA")
+                cantidad_combustible = datos_ia.get("cantidad", "0")
+                proveedor_ia = datos_ia.get("proveedor", "GRIFO (Desde App)").upper()
+                ruc_ia = datos_ia.get("ruc", "")
+                direccion_ia = datos_ia.get("direccion", "Dirección no indicada")
+                
                 if subtotal_monto == 0.0 and total_monto > 0:
                     subtotal_monto = round(total_monto / 1.18, 2)
                     igv_monto = round(total_monto - subtotal_monto, 2)
             else:
-                raise ValueError("La IA no devolvió un formato JSON válido.")
-
+                raise ValueError("No JSON found")
         except Exception as e:
-            print(f"⚠️ Error Final de IA: {e}")
+            print(f"⚠️ Error IA: {e}")
 
-        # Guardamos en base de datos
         cursor = conn.cursor()
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
             try:
@@ -213,6 +156,10 @@ async def subir_ticket_grifo(
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         conn.close()
+
+# =================================================================
+# 2. MÓDULO DE GPS Y ASISTENCIA
+# =================================================================
 
 @app.get("/geocerca-config/")
 async def obtener_geocerca():
