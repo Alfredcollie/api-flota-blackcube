@@ -42,7 +42,7 @@ async def subir_ticket_grifo(
         direccion_ia = ""
         
         try:
-            print(f"🤖 IA Analizando ticket para placa {placa} con OpenRouter...")
+            print(f"🤖 IA Iniciando análisis para la placa {placa}...")
             
             prompt_texto = """
             Eres un auditor experto. Lee la imagen de este comprobante/ticket de combustible y extrae la información en formato JSON estricto:
@@ -60,25 +60,6 @@ async def subir_ticket_grifo(
             Responde ÚNICAMENTE con el objeto JSON, nada más.
             """
 
-            # Usamos el modelo Gemini Pro Gratuito a través de OpenRouter
-            payload = {
-                "model": "qwen/qwen-2-vl-7b-instruct:free",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt_texto},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{foto_b64}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            }
-
             headers = {
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
                 "Content-Type": "application/json",
@@ -86,23 +67,65 @@ async def subir_ticket_grifo(
                 "X-Title": "FlotaApp"
             }
 
-            req = urllib.request.Request(
-                "https://openrouter.ai/api/v1/chat/completions",
-                data=json.dumps(payload).encode("utf-8"),
-                headers=headers,
-                method="POST"
-            )
+            # 🚀 SISTEMA DE RESPALDO AUTOMÁTICO (FALLBACK)
+            # Intentará con estos modelos gratuitos en orden hasta que uno funcione
+            modelos_gratuitos = [
+                "google/gemini-2.0-flash-lite-preview-02-05:free",
+                "google/gemini-exp-1206:free",
+                "meta-llama/llama-3.2-11b-vision-instruct:free",
+                "qwen/qwen-2-vl-7b-instruct:free"
+            ]
 
-            # ESTE BLOQUE ATRAPARÁ EL TEXTO REAL DEL ERROR SI FALLA
-            try:
-                with urllib.request.urlopen(req, timeout=40) as response:
-                    res_data = json.loads(response.read().decode("utf-8"))
-                    texto_respuesta = res_data["choices"][0]["message"]["content"]
-            except urllib.error.HTTPError as he:
-                error_body = he.read().decode("utf-8")
-                print(f"⚠️ ERROR REAL DE OPENROUTER: {error_body}")
-                raise ValueError(f"Fallo de conexión OpenRouter: {error_body}")
+            texto_respuesta = None
+            ultimo_error = ""
 
+            for modelo in modelos_gratuitos:
+                print(f"🔄 Intentando con el modelo gratuito: {modelo}...")
+                payload = {
+                    "model": modelo,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt_texto},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{foto_b64}"
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+
+                req = urllib.request.Request(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers=headers,
+                    method="POST"
+                )
+
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as response:
+                        res_data = json.loads(response.read().decode("utf-8"))
+                        texto_respuesta = res_data["choices"][0]["message"]["content"]
+                        print(f"✅ ¡Éxito! El modelo {modelo} procesó la imagen.")
+                        break  # Salimos del bucle porque ya funcionó
+                except urllib.error.HTTPError as he:
+                    error_body = he.read().decode("utf-8")
+                    ultimo_error = error_body
+                    print(f"⚠️ El modelo {modelo} falló o está ocupado. Saltando al siguiente...")
+                    continue # Pasa al siguiente modelo de la lista
+                except Exception as e:
+                    ultimo_error = str(e)
+                    print(f"⚠️ Error de conexión con {modelo}. Saltando al siguiente...")
+                    continue
+
+            if not texto_respuesta:
+                raise ValueError(f"Todos los servidores gratuitos están ocupados en este momento. Intenta en unos minutos. Último error: {ultimo_error}")
+
+            # Procesamos el JSON devuelto por el modelo ganador
             match = re.search(r'\{.*\}', texto_respuesta, re.DOTALL)
             if match:
                 datos_ia = json.loads(match.group(0))
@@ -120,11 +143,12 @@ async def subir_ticket_grifo(
                     subtotal_monto = round(total_monto / 1.18, 2)
                     igv_monto = round(total_monto - subtotal_monto, 2)
             else:
-                raise ValueError("No JSON in response")
+                raise ValueError("La IA no devolvió un formato JSON válido.")
 
         except Exception as e:
-            print(f"⚠️ Error IA: {e}")
+            print(f"⚠️ Error Final de IA: {e}")
 
+        # Guardamos en base de datos
         cursor = conn.cursor()
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
             try:
