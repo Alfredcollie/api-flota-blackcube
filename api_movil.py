@@ -46,10 +46,12 @@ async def subir_ticket_grifo(
         try:
             print(f"🤖 IA Analizando el ticket de la placa {placa}...")
             
-            # Formato oficial para enviar bytes de imagen en el nuevo SDK
+            # Forzamos el tipo a imagen por si el celular lo envía como archivo genérico
+            tipo_mime = foto.content_type if foto.content_type and "image" in foto.content_type else "image/jpeg"
+            
             parte_imagen = types.Part.from_bytes(
                 data=foto_bytes,
-                mime_type=foto.content_type
+                mime_type=tipo_mime
             )
             
             prompt = """
@@ -66,7 +68,7 @@ async def subir_ticket_grifo(
             """
             
             respuesta = cliente_ia.models.generate_content(
-                model='gemini-3.5-flash', 
+                model='gemini-1.5-flash', 
                 contents=[parte_imagen, prompt]
             )
             
