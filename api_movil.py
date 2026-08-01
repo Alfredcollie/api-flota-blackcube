@@ -11,7 +11,7 @@ from google.genai import types
 
 # --- CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL ---
 # ⚠️ REEMPLAZA con tu API Key real de Google AI Studio (Empieza con AIza...)
-cliente_ia = genai.Client(api_key="AQ.Ab8RN6KTR-IvzpzPC0p6tMWChrzVQjyE1Y0lGQn7zXyOOSGsLg")
+cliente_ia = genai.Client(api_key="AQ.Ab8RN6JaJUb44nrBtQ0GwYo8o_8J2l7Lm566KWuLq-xXqViaow")
 # ---------------------------------------------------
 
 app = FastAPI(title="API - Flota Automotriz Black Cube")
