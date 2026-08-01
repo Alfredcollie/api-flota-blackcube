@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 import psycopg2
 from psycopg2 import OperationalError
-import tkinter as tk
-from tkinter import messagebox
 from datetime import datetime
 
 # ============================================================
