@@ -66,7 +66,7 @@ async def subir_ticket_grifo(
             """
             
             respuesta = cliente_ia.models.generate_content(
-                model='gemini-1.5-flash', 
+                model='gemini-3.5-flash', 
                 contents=[parte_imagen, prompt]
             )
             
