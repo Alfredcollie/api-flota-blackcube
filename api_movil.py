@@ -4,21 +4,19 @@ import base64
 import os
 import json
 import re
+import urllib.request
+import urllib.parse
 from datetime import datetime
 from conexion import conectar_db
-from google import genai
-from google.genai import types
 
-# --- CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL ---
-# ⚠️ REEMPLAZA con tu API Key real de Google AI Studio (Empieza con AIza...)
-cliente_ia = genai.Client(api_key="AQ.Ab8RN6JyLpGNvSLTGTbkxGse88YvOp214yT8j_b7Wxj_CvgcZQ")
+# ---------------------------------------------------
+# 🚀 CLAVE GRATUITA DE OPENROUTER (SIN TARJETA)
+# Reemplaza con tu clave creada en openrouter.ai (Empieza con sk-or-v1-...)
+OPENROUTER_API_KEY = "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"
 # ---------------------------------------------------
 
 app = FastAPI(title="API - Flota Automotriz Black Cube")
 
-# =================================================================
-# 1. MÓDULO DE LECTURA DE TICKETS
-# =================================================================
 @app.post("/subir-ticket/")
 async def subir_ticket_grifo(
     placa: str = Form(...),
@@ -44,55 +42,82 @@ async def subir_ticket_grifo(
         direccion_ia = ""
         
         try:
-            print(f"🤖 IA Analizando el ticket de la placa {placa}...")
+            print(f"🤖 IA Analizando ticket para placa {placa} con OpenRouter...")
             
-            # Forzamos el tipo a imagen por si el celular lo envía como archivo genérico
-            tipo_mime = foto.content_type if foto.content_type and "image" in foto.content_type else "image/jpeg"
-            
-            parte_imagen = types.Part.from_bytes(
-                data=foto_bytes,
-                mime_type=tipo_mime
-            )
-            
-            prompt = """
-            Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en la imagen. Extrae la información en formato JSON estricto:
-            - "numero_documento": (El número de serie y correlativo exacto impreso)
-            - "subtotal": (solo el número decimal)
-            - "igv": (solo el número decimal)
-            - "total": (solo el número decimal)
-            - "tipo_combustible": (ej. Diesel, Gasohol 95)
-            - "cantidad": (ej. 10.500 GAL)
-            - "proveedor": (El nombre del establecimiento comercial)
-            - "ruc": (Los 11 dígitos del RUC)
-            - "direccion": (La dirección del comprobante)
+            prompt_texto = """
+            Eres un auditor experto. Lee la imagen de este comprobante/ticket de combustible y extrae la información en formato JSON estricto:
+            {
+              "numero_documento": "Número de comprobante impreso (ej. F001-1234)",
+              "subtotal": 0.00,
+              "igv": 0.00,
+              "total": 0.00,
+              "tipo_combustible": "Tipo de combustible (ej. Diesel, Gasohol)",
+              "cantidad": "Cantidad en galones/litros",
+              "proveedor": "Nombre de la empresa o grifo",
+              "ruc": "RUC de 11 dígitos",
+              "direccion": "Dirección fiscal del grifo"
+            }
+            Responde ÚNICAMENTE con el objeto JSON, nada más.
             """
-            
-            respuesta = cliente_ia.models.generate_content(
-                model='gemini-2.0-flash', 
-                contents=[parte_imagen, prompt]
+
+            # Preparar payload compatible con OpenAI / OpenRouter
+            payload = {
+                "model": "meta-llama/llama-3.2-11b-vision-instruct:free",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt_texto},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{foto_b64}"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://blackcube.com",
+                "X-Title": "FlotaApp"
+            }
+
+            req = urllib.request.Request(
+                "https://openrouter.ai/api/v1/chat/completions",
+                data=json.dumps(payload).encode("utf-8"),
+                headers=headers,
+                method="POST"
             )
-            
-            match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
-            
+
+            with urllib.request.urlopen(req, timeout=30) as response:
+                res_data = json.loads(response.read().decode("utf-8"))
+                texto_respuesta = res_data["choices"][0]["message"]["content"]
+
+            match = re.search(r'\{.*\}', texto_respuesta, re.DOTALL)
             if match:
                 datos_ia = json.loads(match.group(0))
-                numero_doc = datos_ia.get("numero_documento", "POR-ASIGNAR")
-                subtotal_monto = float(datos_ia.get("subtotal", 0.0))
-                igv_monto = float(datos_ia.get("igv", 0.0))
-                total_monto = float(datos_ia.get("total", 0.0))
-                tipo_combustible = datos_ia.get("tipo_combustible", "NO INDICA")
-                cantidad_combustible = datos_ia.get("cantidad", "0")
-                proveedor_ia = datos_ia.get("proveedor", "GRIFO (Desde App)").upper()
-                ruc_ia = datos_ia.get("ruc", "")
-                direccion_ia = datos_ia.get("direccion", "Dirección no indicada")
-                
+                numero_doc = str(datos_ia.get("numero_documento", "POR-ASIGNAR"))
+                subtotal_monto = float(datos_ia.get("subtotal", 0.0) or 0.0)
+                igv_monto = float(datos_ia.get("igv", 0.0) or 0.0)
+                total_monto = float(datos_ia.get("total", 0.0) or 0.0)
+                tipo_combustible = str(datos_ia.get("tipo_combustible", "NO INDICA"))
+                cantidad_combustible = str(datos_ia.get("cantidad", "0"))
+                proveedor_ia = str(datos_ia.get("proveedor", "GRIFO (Desde App)")).upper()
+                ruc_ia = str(datos_ia.get("ruc", ""))
+                direccion_ia = str(datos_ia.get("direccion", "Dirección no indicada"))
+
                 if subtotal_monto == 0.0 and total_monto > 0:
                     subtotal_monto = round(total_monto / 1.18, 2)
                     igv_monto = round(total_monto - subtotal_monto, 2)
             else:
-                raise ValueError("No JSON found")
+                raise ValueError("No JSON in response")
+
         except Exception as e:
-            print(f"⚠️ Error IA: {e}")
+            print(f"⚠️ Error IA OpenRouter: {e}")
 
         cursor = conn.cursor()
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
@@ -158,10 +183,6 @@ async def subir_ticket_grifo(
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         conn.close()
-
-# =================================================================
-# 2. MÓDULO DE GPS Y ASISTENCIA
-# =================================================================
 
 @app.get("/geocerca-config/")
 async def obtener_geocerca():
