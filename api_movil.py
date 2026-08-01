@@ -6,12 +6,12 @@ import json
 import re
 import urllib.request
 import urllib.parse
+import urllib.error
 from datetime import datetime
 from conexion import conectar_db
 
 # ---------------------------------------------------
 # 🚀 CLAVE GRATUITA DE OPENROUTER (SIN TARJETA)
-# Reemplaza con tu clave creada en openrouter.ai (Empieza con sk-or-v1-...)
 OPENROUTER_API_KEY = "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"
 # ---------------------------------------------------
 
@@ -60,9 +60,9 @@ async def subir_ticket_grifo(
             Responde ÚNICAMENTE con el objeto JSON, nada más.
             """
 
-            # Preparar payload compatible con OpenAI / OpenRouter
+            # Usamos el modelo Gemini Pro Gratuito a través de OpenRouter
             payload = {
-                "model": "meta-llama/llama-3.2-11b-vision-instruct:free",
+                "model": "google/gemini-2.0-pro-exp-02-05:free",
                 "messages": [
                     {
                         "role": "user",
@@ -93,9 +93,15 @@ async def subir_ticket_grifo(
                 method="POST"
             )
 
-            with urllib.request.urlopen(req, timeout=30) as response:
-                res_data = json.loads(response.read().decode("utf-8"))
-                texto_respuesta = res_data["choices"][0]["message"]["content"]
+            # ESTE BLOQUE ATRAPARÁ EL TEXTO REAL DEL ERROR SI FALLA
+            try:
+                with urllib.request.urlopen(req, timeout=40) as response:
+                    res_data = json.loads(response.read().decode("utf-8"))
+                    texto_respuesta = res_data["choices"][0]["message"]["content"]
+            except urllib.error.HTTPError as he:
+                error_body = he.read().decode("utf-8")
+                print(f"⚠️ ERROR REAL DE OPENROUTER: {error_body}")
+                raise ValueError(f"Fallo de conexión OpenRouter: {error_body}")
 
             match = re.search(r'\{.*\}', texto_respuesta, re.DOTALL)
             if match:
@@ -117,7 +123,7 @@ async def subir_ticket_grifo(
                 raise ValueError("No JSON in response")
 
         except Exception as e:
-            print(f"⚠️ Error IA OpenRouter: {e}")
+            print(f"⚠️ Error IA: {e}")
 
         cursor = conn.cursor()
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
