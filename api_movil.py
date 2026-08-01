@@ -62,7 +62,7 @@ async def subir_ticket_grifo(
 
             # Usamos el modelo Gemini Pro Gratuito a través de OpenRouter
             payload = {
-                "model": "google/gemini-2.0-pro-exp-02-05:free",
+                "model": "meta-llama/llama-3.2-11b-vision-instruct:free",
                 "messages": [
                     {
                         "role": "user",
