@@ -58,7 +58,7 @@ async def subir_ticket_grifo(
             - "direccion": (La dirección del comprobante)
             """
             
-            respuesta = cliente_ia.models.generate_content(model='gemini-3.5-flash', contents=[archivo_ia, prompt])
+            respuesta = cliente_ia.models.generate_content(model='gemini-1.5-flash', contents=[archivo_ia, prompt])
             match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
             
             if match:
