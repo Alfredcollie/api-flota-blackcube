@@ -97,7 +97,7 @@ async def subir_ticket_grifo(
             
             match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
             
-            if match:
+if match:
                 datos_ia = json.loads(match.group(0))
                 numero_doc = datos_ia.get("numero_documento", "POR-ASIGNAR")
                 subtotal_monto = float(datos_ia.get("subtotal", 0.0))
@@ -108,7 +108,11 @@ async def subir_ticket_grifo(
                 proveedor_ia = datos_ia.get("proveedor", "GRIFO (Desde App)").upper()
                 ruc_ia = datos_ia.get("ruc", "")
                 direccion_ia = datos_ia.get("direccion", "Dirección no indicada")
-                
+
+                # Nuevos campos
+                hora_consumo = datos_ia.get("hora_consumo", "00:00")
+                metodo_pago = datos_ia.get("metodo_pago", "NO ESPECIFICA")
+
                 if subtotal_monto == 0.0 and total_monto > 0:
                     subtotal_monto = round(total_monto / 1.18, 2)
                     igv_monto = round(total_monto - subtotal_monto, 2)
