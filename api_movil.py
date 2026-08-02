@@ -4,15 +4,15 @@ import base64
 import os
 import json
 import re
+import requests  # Importación nueva para llamar a la API de Qwen
 from datetime import datetime
 from conexion import conectar_db
-from google import genai
-from google.genai import types
 
-# --- CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL ---
-# ⚠️ REEMPLAZA con tu API Key real de Google AI Studio (Empieza con AIza...)
-cliente_ia = genai.Client(api_key="AQ.Ab8RN6KG8h8gyByVynLZGB4BLXawAq3Dtybkv3QZk9_Lf3f1qw")
-# ---------------------------------------------------
+# --- CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL (QWEN CLOUD) ---
+QWEN_API_KEY = "sk-ws-H.XXIIPI.p7Tl.MEUCIQDguE3Ocd7FjxHPFFi1_wroePYr_MVppA0wmOuUC9K8YgIgPisI2c7VCjgcuZ0Rv5U0yCwj3JIz_7omprW1jEoTqcg"
+# Usamos el endpoint compatible de DashScope (Qwen)
+QWEN_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+# ----------------------------------------------------------------
 
 app = FastAPI(title="API - Flota Automotriz Black Cube")
 
@@ -32,6 +32,7 @@ async def subir_ticket_grifo(
     try:
         foto_bytes = await foto.read()
         foto_b64 = base64.b64encode(foto_bytes).decode('utf-8')
+        mime_type = foto.content_type
 
         numero_doc = "POR-ASIGNAR"
         subtotal_monto = 0.0
@@ -44,13 +45,7 @@ async def subir_ticket_grifo(
         direccion_ia = ""
         
         try:
-            print(f"🤖 IA Analizando el ticket de la placa {placa}...")
-            
-            # Formato oficial para enviar bytes de imagen en el nuevo SDK
-            parte_imagen = types.Part.from_bytes(
-                data=foto_bytes,
-                mime_type=foto.content_type
-            )
+            print(f"🤖 IA (Qwen) Analizando el ticket de la placa {placa}...")
             
             prompt = """
             Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en la imagen. Extrae la información en formato JSON estricto:
@@ -65,12 +60,40 @@ async def subir_ticket_grifo(
             - "direccion": (La dirección del comprobante)
             """
             
-            respuesta = cliente_ia.models.generate_content(
-                model='gemini-1.5-flash', 
-                contents=[parte_imagen, prompt]
-            )
+            headers = {
+                "Authorization": f"Bearer {QWEN_API_KEY}",
+                "Content-Type": "application/json"
+            }
             
-            match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
+            payload = {
+                "model": "qwen-vl-max", # Modelo de visión de Qwen
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{foto_b64}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": prompt
+                            }
+                        ]
+                    }
+                ]
+            }
+            
+            # Llamada HTTP a QwenCloud
+            respuesta = requests.post(QWEN_API_URL, headers=headers, json=payload)
+            respuesta.raise_for_status() # Arroja error si el token es inválido o falla la red
+            
+            datos_respuesta = respuesta.json()
+            texto_ia = datos_respuesta['choices'][0]['message']['content']
+            
+            match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
             
             if match:
                 datos_ia = json.loads(match.group(0))
