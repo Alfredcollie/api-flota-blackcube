@@ -50,6 +50,8 @@ async def subir_ticket_grifo(
             prompt = """
             Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en la imagen. Extrae la información en formato JSON estricto:
             - "numero_documento": (El número de serie y correlativo exacto impreso)
+            - "hora_consumo": (La hora en la que se emitió el ticket, ej: 14:30 o 02:30 PM. Si no hay, pon "00:00")
+            - "metodo_pago": (Ej: EFECTIVO, TARJETA VISA, YAPE, PLIN. Si es tarjeta, incluye los últimos 4 dígitos si aparecen, ej: "TARJETA VISA **** 1234")
             - "subtotal": (solo el número decimal)
             - "igv": (solo el número decimal)
             - "total": (solo el número decimal)
