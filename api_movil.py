@@ -4,13 +4,12 @@ import base64
 import os
 import json
 import re
-import requests  # Importación nueva para llamar a la API de Qwen
+import requests
 from datetime import datetime
 from conexion import conectar_db
 
 # --- CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL (QWEN CLOUD) ---
 QWEN_API_KEY = "sk-ws-H.XXIIPI.p7Tl.MEUCIQDguE3Ocd7FjxHPFFi1_wroePYr_MVppA0wmOuUC9K8YgIgPisI2c7VCjgcuZ0Rv5U0yCwj3JIz_7omprW1jEoTqcg"
-# Usamos el endpoint compatible de DashScope (Qwen)
 QWEN_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
 # ----------------------------------------------------------------
 
@@ -43,6 +42,8 @@ async def subir_ticket_grifo(
         proveedor_ia = "GRIFO (Desde App)"
         ruc_ia = ""
         direccion_ia = ""
+        hora_consumo = "00:00"
+        metodo_pago = "NO ESPECIFICA"
         
         try:
             print(f"🤖 IA (Qwen) Analizando el ticket de la placa {placa}...")
@@ -68,7 +69,7 @@ async def subir_ticket_grifo(
             }
             
             payload = {
-                "model": "qwen-vl-plus", # Modelo de visión de Qwen
+                "model": "qwen-vl-plus", 
                 "messages": [
                     {
                         "role": "user",
@@ -88,16 +89,15 @@ async def subir_ticket_grifo(
                 ]
             }
             
-            # Llamada HTTP a QwenCloud
             respuesta = requests.post(QWEN_API_URL, headers=headers, json=payload)
-            respuesta.raise_for_status() # Arroja error si el token es inválido o falla la red
+            respuesta.raise_for_status() 
             
             datos_respuesta = respuesta.json()
             texto_ia = datos_respuesta['choices'][0]['message']['content']
             
             match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
             
-if match:
+            if match:
                 datos_ia = json.loads(match.group(0))
                 numero_doc = datos_ia.get("numero_documento", "POR-ASIGNAR")
                 subtotal_monto = float(datos_ia.get("subtotal", 0.0))
@@ -108,11 +108,9 @@ if match:
                 proveedor_ia = datos_ia.get("proveedor", "GRIFO (Desde App)").upper()
                 ruc_ia = datos_ia.get("ruc", "")
                 direccion_ia = datos_ia.get("direccion", "Dirección no indicada")
-
-                # Nuevos campos
                 hora_consumo = datos_ia.get("hora_consumo", "00:00")
                 metodo_pago = datos_ia.get("metodo_pago", "NO ESPECIFICA")
-
+                
                 if subtotal_monto == 0.0 and total_monto > 0:
                     subtotal_monto = round(total_monto / 1.18, 2)
                     igv_monto = round(total_monto - subtotal_monto, 2)
@@ -149,7 +147,8 @@ if match:
             conn.commit()
         except Exception: conn.rollback() 
 
-        descripcion_final = tipo_combustible
+        # Empaquetamos la data nueva en la descripción de la BD
+        descripcion_final = f"{tipo_combustible} | Hora: {hora_consumo} | Pago: {metodo_pago}"
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
         tipo_doc_final = "Factura (18% IGV)" if numero_doc.startswith("F") else "Boleta / Ticket"
         
