@@ -11,7 +11,7 @@ from conexion import conectar_db
 # --- CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL (QWEN CLOUD) ---
 QWEN_API_KEY = "sk-ws-H.XXIIPI.p7Tl.MEUCIQDguE3Ocd7FjxHPFFi1_wroePYr_MVppA0wmOuUC9K8YgIgPisI2c7VCjgcuZ0Rv5U0yCwj3JIz_7omprW1jEoTqcg"
 # Usamos el endpoint compatible de DashScope (Qwen)
-QWEN_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+QWEN_API_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
 # ----------------------------------------------------------------
 
 app = FastAPI(title="API - Flota Automotriz Black Cube")
