@@ -66,7 +66,8 @@ async def subir_ticket_grifo(
             }
             
             payload = {
-                "model": "qwen-vl-plus", # Modelo de visión de Qwen
+                payload = {
+                "model": "qwen-vl", # Modelo base de visión (el más económico)
                 "messages": [
                     {
                         "role": "user",
