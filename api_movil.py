@@ -143,7 +143,7 @@ async def subir_ticket_grifo(
             conn.commit()
         except Exception: conn.rollback() 
 
-        descripcion_final = f"Combustible: {tipo_combustible} | Cant: {cantidad_combustible}"
+        descripcion_final = tipo_combustible
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
         tipo_doc_final = "Factura (18% IGV)" if numero_doc.startswith("F") else "Boleta / Ticket"
         
