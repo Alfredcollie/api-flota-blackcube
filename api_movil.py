@@ -51,17 +51,17 @@ async def subir_ticket_grifo(
             
             prompt = """
             Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en la imagen. Extrae la información en formato JSON estricto:
-            - "numero_documento": (El número de serie y correlativo exacto impreso)
+            - "numero_documento": (El número de serie y correlativo exacto impreso, ej: F37B-00034013)
             - "fecha_emision": (La fecha de emisión impresa en el ticket, en formato DD/MM/AAAA)
-            - "hora_consumo": (La hora en la que se emitió el ticket, ej: 14:30 o 02:30 PM. Si no hay, pon "00:00")
-            - "metodo_pago": (Ej: EFECTIVO, TARJETA VISA, YAPE, PLIN. Si es tarjeta, incluye los últimos 4 dígitos si aparecen, ej: "TARJETA VISA **** 1234")
-            - "subtotal": (solo el número decimal)
-            - "igv": (solo el número decimal)
-            - "total": (solo el número decimal)
-            - "tipo_combustible": (Busca bajo la columna 'Descripcion' o similar el producto vendido. Ej. Diesel, Gasohol 95, G.N.V., GLP)
-            - "cantidad": (Busca bajo la columna 'm3', 'Gal', 'Cantidad' o similar. Extrae solo el número decimal, Ej: 2.78, 10.500)
-            - "proveedor": (El nombre del establecimiento comercial)
-            - "ruc": (Los 11 dígitos del RUC)
+            - "hora_consumo": (La hora en la que se emitió el ticket, ej: 16:55. Si no hay, pon "00:00")
+            - "metodo_pago": (Ej: EFECTIVO, TARJETA VISA, YAPE. Busca bajo 'FORMAS DE PAGO')
+            - "subtotal": (solo el número decimal, el valor de OP. GRAVADA o SUBTOTAL)
+            - "igv": (solo el número decimal, el valor de I.G.V.)
+            - "total": (solo el número decimal, el IMPORTE TOTAL o TOTAL A PAGAR)
+            - "tipo_combustible": (CRÍTICO: Busca debajo de la palabra 'Descripcion'. En estos tickets es exactamente 'G.N.V.', 'GLP', 'Diesel' o 'Gasohol'. Cópialo tal cual aparece.)
+            - "cantidad": (Busca debajo de la palabra 'm3' o 'Gal'. Extrae solo el número decimal, Ej: 2.78 o 0.80)
+            - "proveedor": (El nombre del establecimiento comercial en la parte superior, ej: COESTI S.A E/S Orrantia)
+            - "ruc": (Los 11 dígitos del RUC impreso)
             - "direccion": (La dirección del comprobante)
             """
             
@@ -107,8 +107,13 @@ async def subir_ticket_grifo(
                 igv_monto = float(datos_ia.get("igv", 0.0))
                 total_monto = float(datos_ia.get("total", 0.0))
                 tipo_combustible = datos_ia.get("tipo_combustible", "NO INDICA")
-                cantidad_combustible = datos_ia.get("cantidad", "0")
+                cantidad_combustible = str(datos_ia.get("cantidad", "0"))
                 proveedor_ia = datos_ia.get("proveedor", "GRIFO (Desde App)").upper()
+                
+                # 🚀 FIX: Limpiamos caracteres inválidos para Windows (Ej: "COESTI E/S" -> "COESTI E-S")
+                # Esto soluciona el problema de las fotos que no se guardaban en la PC.
+                proveedor_ia = re.sub(r'[\\/*?:"<>|]', '-', proveedor_ia)
+                
                 ruc_ia = datos_ia.get("ruc", "")
                 direccion_ia = datos_ia.get("direccion", "Dirección no indicada")
                 hora_consumo = datos_ia.get("hora_consumo", "00:00")
@@ -127,16 +132,12 @@ async def subir_ticket_grifo(
         # 🚀 LÓGICA ANTI-DUPLICADOS PARA PROVEEDORES
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
             try:
-                # 1. Buscamos si el RUC ya existe en la base de datos
                 cursor.execute("SELECT nombre FROM proveedores WHERE ruc = %s", (ruc_ia,))
                 proveedor_existente = cursor.fetchone()
                 
                 if proveedor_existente:
-                    # 2. Si ya existe, usamos el nombre oficial que tú ya tenías guardado
-                    # (Esto evita que la IA cree variaciones del mismo nombre)
                     proveedor_ia = proveedor_existente[0]
                 else:
-                    # 3. Si NO existe, lo agregamos como un proveedor nuevo
                     cursor.execute("INSERT INTO proveedores (ruc, nombre, direccion_fiscal, categoria) VALUES (%s, %s, %s, %s)", (ruc_ia, proveedor_ia, direccion_ia, "Combustible / Grifo"))
                     conn.commit()
             except Exception as ep: 
@@ -164,7 +165,7 @@ async def subir_ticket_grifo(
 
         # --- VALIDACIÓN DE FECHA REAL VS FECHA SERVIDOR ---
         if not fecha_emision or len(fecha_emision) < 8:
-            fecha_final = datetime.now().strftime("%d/%m/%Y") # Plan B si la foto es borrosa
+            fecha_final = datetime.now().strftime("%d/%m/%Y") 
         else:
             fecha_final = fecha_emision
 
