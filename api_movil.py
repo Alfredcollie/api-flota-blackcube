@@ -42,6 +42,7 @@ async def subir_ticket_grifo(
         proveedor_ia = "GRIFO (Desde App)"
         ruc_ia = ""
         direccion_ia = ""
+        fecha_emision = ""
         hora_consumo = "00:00"
         metodo_pago = "NO ESPECIFICA"
         
@@ -51,6 +52,7 @@ async def subir_ticket_grifo(
             prompt = """
             Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en la imagen. Extrae la información en formato JSON estricto:
             - "numero_documento": (El número de serie y correlativo exacto impreso)
+            - "fecha_emision": (La fecha de emisión impresa en el ticket, en formato DD/MM/AAAA)
             - "hora_consumo": (La hora en la que se emitió el ticket, ej: 14:30 o 02:30 PM. Si no hay, pon "00:00")
             - "metodo_pago": (Ej: EFECTIVO, TARJETA VISA, YAPE, PLIN. Si es tarjeta, incluye los últimos 4 dígitos si aparecen, ej: "TARJETA VISA **** 1234")
             - "subtotal": (solo el número decimal)
@@ -100,6 +102,7 @@ async def subir_ticket_grifo(
             if match:
                 datos_ia = json.loads(match.group(0))
                 numero_doc = datos_ia.get("numero_documento", "POR-ASIGNAR")
+                fecha_emision = datos_ia.get("fecha_emision", "")
                 subtotal_monto = float(datos_ia.get("subtotal", 0.0))
                 igv_monto = float(datos_ia.get("igv", 0.0))
                 total_monto = float(datos_ia.get("total", 0.0))
@@ -147,9 +150,14 @@ async def subir_ticket_grifo(
             conn.commit()
         except Exception: conn.rollback() 
 
+        # --- VALIDACIÓN DE FECHA REAL VS FECHA SERVIDOR ---
+        if not fecha_emision or len(fecha_emision) < 8:
+            fecha_final = datetime.now().strftime("%d/%m/%Y") # Plan B si la foto es borrosa
+        else:
+            fecha_final = fecha_emision
+
         # Empaquetamos la data nueva en la descripción de la BD
         descripcion_final = f"{tipo_combustible} | Hora: {hora_consumo} | Pago: {metodo_pago}"
-        fecha_hoy = datetime.now().strftime("%d/%m/%Y")
         tipo_doc_final = "Factura (18% IGV)" if numero_doc.startswith("F") else "Boleta / Ticket"
         
         cursor.execute("""
@@ -159,7 +167,7 @@ async def subir_ticket_grifo(
                 total, archivo_ruta, categoria, kilometraje, cantidad_combustible, ruc, imagen_base64
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
-            tipo_doc_final, numero_doc, fecha_hoy, proveedor_ia, 
+            tipo_doc_final, numero_doc, fecha_final, proveedor_ia, 
             descripcion_final, placa, subtotal_monto, igv_monto, total_monto, "PENDIENTE_DESCARGA", "Combustible y Peajes", kilometraje, cantidad_combustible, ruc_ia, foto_b64
         ))
 
@@ -173,7 +181,7 @@ async def subir_ticket_grifo(
             ) VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (
             id_factura, total_monto, "PENDIENTE_DESCARGA", 
-            proveedor_ia, fecha_hoy, "Combustible y Peajes", numero_doc
+            proveedor_ia, fecha_final, "Combustible y Peajes", numero_doc
         ))
 
         conn.commit()
