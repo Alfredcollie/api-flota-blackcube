@@ -44,25 +44,22 @@ async def subir_ticket_grifo(
         direccion_ia = ""
         fecha_emision = ""
         hora_consumo = "00:00"
-        metodo_pago = "NO ESPECIFICA"
         
         try:
             print(f"🤖 IA (Qwen) Analizando el ticket de la placa {placa}...")
             
-            # 🚀 PROMPT MEJORADO PARA LEER G.N.V Y TABLAS COMPLEJAS
             prompt = """
             Eres un auditor experto en extraer datos de tickets peruanos. Extrae la información en un JSON estricto con las siguientes claves:
             - "numero_documento": (El correlativo exacto bajo FACTURA DE VENTA ELECTRONICA. Ej: F38B-00018003 o F37B-00034013)
             - "fecha_emision": (Fecha en formato DD/MM/AAAA)
-            - "hora_consumo": (Hora exacta, ej: 16:49 o 16:55)
-            - "metodo_pago": (Busca en FORMAS DE PAGO o PAGO CON TARJETA. Ej: T.Debito VISA)
+            - "hora_consumo": (Hora exacta, ej: 16:49 o 16:55. Si no hay, pon "00:00")
             - "subtotal": (Valor numérico de OP. GRAVADA)
             - "igv": (Valor numérico de I.G.V.)
             - "total": (Valor numérico de IMPORTE TOTAL G.N.V. o TOTAL A PAGAR)
-            - "tipo_combustible": (Busca la tabla con 'Descripcion'. Extrae el texto exacto debajo, Ej: G.N.V., GLP o Diesel)
+            - "tipo_combustible": (CRÍTICO: Busca debajo de la palabra 'Descripcion'. En estos tickets es exactamente 'G.N.V.', 'GLP', 'Diesel' o 'Gasohol'. Cópialo tal cual aparece.)
             - "cantidad": (El número exacto bajo la columna 'm3' o 'Gal'. Ej: 2.78 o 0.80)
             - "proveedor": (El nombre de la empresa en la primera línea. Ej: COESTI S.A E/S Orrantia)
-            - "ruc": (Los 11 dígitos del RUC)
+            - "ruc": (Los 11 dígitos del RUC impreso)
             - "direccion": (Dirección del establecimiento)
             """
             
@@ -117,7 +114,6 @@ async def subir_ticket_grifo(
                 ruc_ia = datos_ia.get("ruc", "")
                 direccion_ia = datos_ia.get("direccion", "Dirección no indicada")
                 hora_consumo = datos_ia.get("hora_consumo", "00:00")
-                metodo_pago = datos_ia.get("metodo_pago", "NO ESPECIFICA")
                 
                 if subtotal_monto == 0.0 and total_monto > 0:
                     subtotal_monto = round(total_monto / 1.18, 2)
@@ -129,6 +125,7 @@ async def subir_ticket_grifo(
 
         cursor = conn.cursor()
         
+        # 🚀 LÓGICA ANTI-DUPLICADOS PARA PROVEEDORES
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
             try:
                 cursor.execute("SELECT nombre FROM proveedores WHERE ruc = %s", (ruc_ia,))
@@ -167,7 +164,8 @@ async def subir_ticket_grifo(
         else:
             fecha_final = fecha_emision
 
-        descripcion_final = f"{tipo_combustible} | Hora: {hora_consumo} | Pago: {metodo_pago}"
+        # 🚀 Ya no inyectamos la forma de pago aquí, solo los datos del ticket
+        descripcion_final = f"{tipo_combustible} | Hora: {hora_consumo}"
         tipo_doc_final = "Factura (18% IGV)" if numero_doc.startswith("F") else "Boleta / Ticket"
         
         cursor.execute("""
