@@ -123,13 +123,25 @@ async def subir_ticket_grifo(
             print(f"⚠️ Error IA: {e}")
 
         cursor = conn.cursor()
+        
+        # 🚀 LÓGICA ANTI-DUPLICADOS PARA PROVEEDORES
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
             try:
-                cursor.execute("SELECT ruc FROM proveedores WHERE ruc = %s", (ruc_ia,))
-                if not cursor.fetchone():
+                # 1. Buscamos si el RUC ya existe en la base de datos
+                cursor.execute("SELECT nombre FROM proveedores WHERE ruc = %s", (ruc_ia,))
+                proveedor_existente = cursor.fetchone()
+                
+                if proveedor_existente:
+                    # 2. Si ya existe, usamos el nombre oficial que tú ya tenías guardado
+                    # (Esto evita que la IA cree variaciones del mismo nombre)
+                    proveedor_ia = proveedor_existente[0]
+                else:
+                    # 3. Si NO existe, lo agregamos como un proveedor nuevo
                     cursor.execute("INSERT INTO proveedores (ruc, nombre, direccion_fiscal, categoria) VALUES (%s, %s, %s, %s)", (ruc_ia, proveedor_ia, direccion_ia, "Combustible / Grifo"))
                     conn.commit()
-            except Exception: conn.rollback()
+            except Exception as ep: 
+                print(f"⚠️ Error validando proveedor: {ep}")
+                conn.rollback()
 
         if numero_doc and numero_doc not in ["POR-ASIGNAR", "ERROR-LECTURA"]:
             cursor.execute("SELECT COUNT(*) FROM facturas_recibidas WHERE numero_documento = %s AND proveedor = %s", (numero_doc, proveedor_ia))
