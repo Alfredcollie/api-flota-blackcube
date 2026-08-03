@@ -49,20 +49,21 @@ async def subir_ticket_grifo(
         try:
             print(f"🤖 IA (Qwen) Analizando el ticket de la placa {placa}...")
             
+            # 🚀 PROMPT MEJORADO PARA LEER G.N.V Y TABLAS COMPLEJAS
             prompt = """
-            Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en la imagen. Extrae la información en formato JSON estricto:
-            - "numero_documento": (El número de serie y correlativo exacto impreso, ej: F37B-00034013)
-            - "fecha_emision": (La fecha de emisión impresa en el ticket, en formato DD/MM/AAAA)
-            - "hora_consumo": (La hora en la que se emitió el ticket, ej: 16:55. Si no hay, pon "00:00")
-            - "metodo_pago": (Ej: EFECTIVO, TARJETA VISA, YAPE. Busca bajo 'FORMAS DE PAGO')
-            - "subtotal": (solo el número decimal, el valor de OP. GRAVADA o SUBTOTAL)
-            - "igv": (solo el número decimal, el valor de I.G.V.)
-            - "total": (solo el número decimal, el IMPORTE TOTAL o TOTAL A PAGAR)
-            - "tipo_combustible": (CRÍTICO: Busca debajo de la palabra 'Descripcion'. En estos tickets es exactamente 'G.N.V.', 'GLP', 'Diesel' o 'Gasohol'. Cópialo tal cual aparece.)
-            - "cantidad": (Busca debajo de la palabra 'm3' o 'Gal'. Extrae solo el número decimal, Ej: 2.78 o 0.80)
-            - "proveedor": (El nombre del establecimiento comercial en la parte superior, ej: COESTI S.A E/S Orrantia)
-            - "ruc": (Los 11 dígitos del RUC impreso)
-            - "direccion": (La dirección del comprobante)
+            Eres un auditor experto en extraer datos de tickets peruanos. Extrae la información en un JSON estricto con las siguientes claves:
+            - "numero_documento": (El correlativo exacto bajo FACTURA DE VENTA ELECTRONICA. Ej: F38B-00018003 o F37B-00034013)
+            - "fecha_emision": (Fecha en formato DD/MM/AAAA)
+            - "hora_consumo": (Hora exacta, ej: 16:49 o 16:55)
+            - "metodo_pago": (Busca en FORMAS DE PAGO o PAGO CON TARJETA. Ej: T.Debito VISA)
+            - "subtotal": (Valor numérico de OP. GRAVADA)
+            - "igv": (Valor numérico de I.G.V.)
+            - "total": (Valor numérico de IMPORTE TOTAL G.N.V. o TOTAL A PAGAR)
+            - "tipo_combustible": (Busca la tabla con 'Descripcion'. Extrae el texto exacto debajo, Ej: G.N.V., GLP o Diesel)
+            - "cantidad": (El número exacto bajo la columna 'm3' o 'Gal'. Ej: 2.78 o 0.80)
+            - "proveedor": (El nombre de la empresa en la primera línea. Ej: COESTI S.A E/S Orrantia)
+            - "ruc": (Los 11 dígitos del RUC)
+            - "direccion": (Dirección del establecimiento)
             """
             
             headers = {
@@ -110,8 +111,7 @@ async def subir_ticket_grifo(
                 cantidad_combustible = str(datos_ia.get("cantidad", "0"))
                 proveedor_ia = datos_ia.get("proveedor", "GRIFO (Desde App)").upper()
                 
-                # 🚀 FIX: Limpiamos caracteres inválidos para Windows (Ej: "COESTI E/S" -> "COESTI E-S")
-                # Esto soluciona el problema de las fotos que no se guardaban en la PC.
+                # Saneamiento preventivo inicial del nombre del proveedor
                 proveedor_ia = re.sub(r'[\\/*?:"<>|]', '-', proveedor_ia)
                 
                 ruc_ia = datos_ia.get("ruc", "")
@@ -129,7 +129,6 @@ async def subir_ticket_grifo(
 
         cursor = conn.cursor()
         
-        # 🚀 LÓGICA ANTI-DUPLICADOS PARA PROVEEDORES
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
             try:
                 cursor.execute("SELECT nombre FROM proveedores WHERE ruc = %s", (ruc_ia,))
@@ -163,13 +162,11 @@ async def subir_ticket_grifo(
             conn.commit()
         except Exception: conn.rollback() 
 
-        # --- VALIDACIÓN DE FECHA REAL VS FECHA SERVIDOR ---
         if not fecha_emision or len(fecha_emision) < 8:
             fecha_final = datetime.now().strftime("%d/%m/%Y") 
         else:
             fecha_final = fecha_emision
 
-        # Empaquetamos la data nueva en la descripción de la BD
         descripcion_final = f"{tipo_combustible} | Hora: {hora_consumo} | Pago: {metodo_pago}"
         tipo_doc_final = "Factura (18% IGV)" if numero_doc.startswith("F") else "Boleta / Ticket"
         
