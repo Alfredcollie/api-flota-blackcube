@@ -3,7 +3,13 @@
 # Compatibles con Windows y macOS (Apple Silicon M1/M2).
 # Se compilan con Python 3.11 (ver .github/workflows/compilar_mac.yml).
 # ============================================================
-
+fastapi
+uvicorn
+psycopg2-binary
+python-multipart
+google-genai
+keyring
+certifi
 customtkinter==5.2.2
 psycopg2-binary==2.9.9   # tiene wheel macOS arm64 + Windows
 reportlab==4.1.0
