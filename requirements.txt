@@ -10,22 +10,3 @@ python-multipart
 google-genai
 keyring
 certifi
-customtkinter==5.2.2
-psycopg2-binary==2.9.9   # tiene wheel macOS arm64 + Windows
-reportlab==4.1.0
-pypdf==4.1.0
-Pillow==10.2.0
-bcrypt==4.1.2
-
-# --- Llavero del sistema (credenciales Supabase) ---
-keyring>=24.0
-
-# --- Lectura de PDF (facturas SUNAT / órdenes) ---
-pdfplumber>=0.11.0
-
-# --- Exportación a Excel/CSV (opcional, usado en reportes) ---
-openpyxl>=3.1.0
-pandas>=2.1.0
-pypdf
-PyMuPDF
-certifi
