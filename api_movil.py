@@ -10,8 +10,9 @@ from google import genai
 
 # --- CONFIGURACIÓN DE LA INTELIGENCIA ARTIFICIAL ---
 # La API key se lee de la variable de entorno GEMINI_API_KEY (ya no va en el código).
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-cliente_ia = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+cliente_ia = genai.Client(api_key="AQ.Ab8RN6K8rjTq3EKi2Jcpn9lUum2fdHz51wOuelOIoGolE0uzjQ")
+# GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+# cliente_ia = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # ---------------------------------------------------
 
 app = FastAPI(title="API - Flota Automotriz Black Cube")
