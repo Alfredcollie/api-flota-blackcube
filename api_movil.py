@@ -5,6 +5,7 @@ import os
 import json
 import re
 from datetime import datetime
+import time
 from google import genai
 from google.genai import types
 from conexion import conectar_db, liberar_conexion
@@ -14,6 +15,17 @@ from conexion import conectar_db, liberar_conexion
 # https://aistudio.google.com/apikey
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip() or "AQ.Ab8RN6LTyHmVNUALwk6Wk7b2EMSzbZrVXVjg-cKUH7cSwnJ0Iw"
 cliente_ia = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+# Modelos de visión en orden de preferencia. Los alias "-latest" son estables
+# aunque Google cambie el número de versión; los específicos sirven de respaldo.
+MODELOS_OCR = (
+    "gemini-3.5-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+)
 # ---------------------------------------------------
 
 
@@ -27,6 +39,33 @@ def _a_float(v):
     s = s.replace(",", ".")
     m = re.search(r'-?\d+(\.\d+)?', s)
     return float(m.group(0)) if m else 0.0
+
+
+def _asegurar_tablas_gps(cursor, conn):
+    """Crea las tablas de geocerca y asistencia si no existen (mismo esquema que el escritorio)."""
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS configuracion_geocerca (
+            id SERIAL PRIMARY KEY,
+            latitud NUMERIC,
+            longitud NUMERIC,
+            radio NUMERIC,
+            estado VARCHAR(20) DEFAULT 'Activo'
+        )
+    """)
+    cursor.execute("SELECT COUNT(*) FROM configuracion_geocerca")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO configuracion_geocerca (latitud, longitud, radio, estado) VALUES (-12.046374, -77.042793, 100.0, 'Activo')")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS registro_asistencia (
+            id SERIAL PRIMARY KEY,
+            placa VARCHAR(50),
+            fecha VARCHAR(20),
+            hora_entrada VARCHAR(20),
+            hora_salida VARCHAR(20),
+            estado VARCHAR(50)
+        )
+    """)
+    conn.commit()
 
 
 app = FastAPI(title="API - Flota Automotriz Black Cube")
@@ -58,6 +97,8 @@ async def subir_ticket_grifo(
         direccion_ia = ""
         fecha_ticket = ""
         hora_ticket = ""
+        ocr_ok = False
+        error_ia = ""
         
         try:
             if cliente_ia is None:
@@ -83,20 +124,34 @@ async def subir_ticket_grifo(
             Reglas: montos como números con punto decimal, sin símbolo de moneda ni comas. RUC solo 11 dígitos.
             """
             
-            # Intentar varios modelos (3.5-flash puede estar saturado -> fallback)
-            respuesta = None
-            for modelo in ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash"):
-                try:
-                    print(f"🤖 Probando modelo {modelo}...")
-                    respuesta = cliente_ia.models.generate_content(
-                        model=modelo, contents=[prompt, archivo_ia])
-                    if respuesta is not None and (respuesta.text or "").strip():
-                        break
-                except Exception as e:
-                    print(f"⚠️ Modelo {modelo} falló: {e}")
-            if respuesta is None or not (respuesta.text or "").strip():
-                raise ValueError("La IA no devolvió texto")
-            texto_ia = respuesta.text or ""
+            config_ia = types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.0,
+            )
+            
+            # Intentar varios modelos (con reintento ante saturación 503/429)
+            texto_ia = ""
+            for modelo in MODELOS_OCR:
+                for intento in range(2):
+                    try:
+                        print(f"🤖 Probando modelo {modelo} (intento {intento+1})...")
+                        respuesta = cliente_ia.models.generate_content(
+                            model=modelo,
+                            contents=[prompt, archivo_ia],
+                            config=config_ia,
+                        )
+                        texto_ia = (respuesta.text or "").strip()
+                        if texto_ia:
+                            break
+                    except Exception as e:
+                        print(f"⚠️ Modelo {modelo} intento {intento+1} falló: {e}")
+                        error_ia = str(e)
+                        if intento < 1:
+                            time.sleep(2)  # breve espera por saturación del servicio
+                if texto_ia:
+                    break
+            if not texto_ia:
+                raise ValueError(f"La IA no devolvió texto. Último error: {error_ia[:300]}")
             
             match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
             
@@ -118,11 +173,13 @@ async def subir_ticket_grifo(
                 if subtotal_monto == 0.0 and total_monto > 0:
                     subtotal_monto = round(total_monto / 1.18, 2)
                     igv_monto = round(total_monto - subtotal_monto, 2)
+                ocr_ok = True
             else:
-                raise ValueError("No JSON found")
+                raise ValueError("La IA no devolvió JSON válido")
             
         except Exception as e:
-            print(f"⚠️ Error IA: {e}")
+            error_ia = str(e)
+            print(f"⚠️ Error IA: {error_ia}")
 
         # 3. GUARDAR EN LA BASE DE DATOS (SUPABASE)
         cursor = conn.cursor()
@@ -194,7 +251,9 @@ async def subir_ticket_grifo(
         ))
 
         conn.commit()
-        return {"status": "success", "mensaje": "Ticket procesado y subido a la nube."}
+        if ocr_ok:
+            return {"status": "success", "mensaje": "Ticket procesado y subido a la nube."}
+        return {"status": "warning", "mensaje": "Ticket guardado, pero la IA no pudo leerlo (datos incompletos).", "detalle_ia": error_ia[:300]}
 
     except Exception as e:
         conn.rollback()
@@ -239,6 +298,91 @@ async def registrar_inspeccion(request: Request):
         ))
         conn.commit()
         return {"status": "success", "mensaje": "Inspección registrada correctamente."}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        liberar_conexion(conn)
+
+
+@app.get("/geocerca-config/")
+async def geocerca_config():
+    """Devuelve latitud, longitud y radio de la base para el radar GPS de la app móvil."""
+    conn = conectar_db()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Error conectando a la base de datos.")
+    try:
+        cursor = conn.cursor()
+        _asegurar_tablas_gps(cursor, conn)
+        cursor.execute("SELECT latitud, longitud, radio, estado FROM configuracion_geocerca LIMIT 1")
+        fila = cursor.fetchone()
+        if not fila:
+            raise HTTPException(status_code=500, detail="No hay geocerca configurada.")
+        return {
+            "latitud": float(fila[0]),
+            "longitud": float(fila[1]),
+            "radio": float(fila[2]),
+            "estado": str(fila[3] or "Activo"),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        liberar_conexion(conn)
+
+
+@app.post("/registrar-asistencia/")
+async def registrar_asistencia(
+    placa: str = Form(...),
+    evento: str = Form(...)
+):
+    """Registra la ENTRADA/SALIDA de un vehículo a la base (radar GPS de la app móvil)."""
+    conn = conectar_db()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Error conectando a la base de datos.")
+    try:
+        cursor = conn.cursor()
+        _asegurar_tablas_gps(cursor, conn)
+
+        placa = (placa or "").strip().upper()
+        evento = (evento or "").strip().upper()
+        if not placa:
+            raise HTTPException(status_code=400, detail="Placa vacía.")
+        ahora = datetime.now()
+        fecha_hoy = ahora.strftime("%d/%m/%Y")
+        hora_hoy = ahora.strftime("%H:%M:%S")
+
+        if evento == "ENTRADA":
+            cursor.execute(
+                "SELECT id FROM registro_asistencia WHERE placa = %s AND (hora_salida IS NULL OR hora_salida = '') ORDER BY id DESC LIMIT 1",
+                (placa,))
+            if cursor.fetchone():
+                return {"status": "info", "mensaje": f"{placa} ya tiene una entrada abierta."}
+            cursor.execute(
+                "INSERT INTO registro_asistencia (placa, fecha, hora_entrada, hora_salida, estado) VALUES (%s, %s, %s, %s, %s)",
+                (placa, fecha_hoy, hora_hoy, "", "EN BASE"))
+            conn.commit()
+            return {"status": "success", "mensaje": f"Entrada registrada: {placa} a las {hora_hoy}."}
+
+        elif evento == "SALIDA":
+            cursor.execute(
+                "SELECT id FROM registro_asistencia WHERE placa = %s AND (hora_salida IS NULL OR hora_salida = '') ORDER BY id DESC LIMIT 1",
+                (placa,))
+            fila = cursor.fetchone()
+            if not fila:
+                return {"status": "info", "mensaje": f"No hay entrada abierta para {placa}."}
+            cursor.execute(
+                "UPDATE registro_asistencia SET hora_salida = %s, estado = %s WHERE id = %s",
+                (hora_hoy, "COMPLETADO", fila[0]))
+            conn.commit()
+            return {"status": "success", "mensaje": f"Salida registrada: {placa} a las {hora_hoy}."}
+
+        else:
+            raise HTTPException(status_code=400, detail=f"Evento no reconocido: {evento}")
+
+    except HTTPException:
+        raise
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=400, detail=str(e))
