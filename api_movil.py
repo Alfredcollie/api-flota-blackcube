@@ -37,7 +37,7 @@ def _preprocesar_imagen(foto_bytes):
         import io
         img = Image.open(io.BytesIO(foto_bytes))
         img = ImageOps.exif_transpose(img).convert("RGB")
-        max_dim = 1600
+        max_dim = 1280
         w, h = img.size
         if max(w, h) > max_dim:
             escala = max_dim / max(w, h)
@@ -180,17 +180,14 @@ async def subir_ticket_grifo(
 
         cursor.execute("UPDATE flota_vehiculos SET kilometraje = %s WHERE placa = %s", (kilometraje, placa))
 
-        # Crear columnas dinámicas (Incluyendo el almacén temporal de la foto "imagen_base64")
-        for col in ["kilometraje", "cantidad_combustible", "ruc", "hora"]:
+        # Crear columnas dinámicas (incluido el almacén temporal de la foto "imagen_base64").
+        # "ADD COLUMN IF NOT EXISTS" evita errores y rollbacks en cada envío (más rápido).
+        for col in ["kilometraje", "cantidad_combustible", "ruc", "hora", "imagen_base64"]:
             try:
-                cursor.execute(f"ALTER TABLE facturas_recibidas ADD COLUMN {col} VARCHAR(50);")
-                conn.commit()
-            except Exception: conn.rollback() 
-            
-        try:
-            cursor.execute("ALTER TABLE facturas_recibidas ADD COLUMN imagen_base64 TEXT;")
-            conn.commit()
-        except Exception: conn.rollback() 
+                cursor.execute(f"ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS {col} TEXT;")
+            except Exception:
+                conn.rollback()
+        conn.commit()
 
         # El detalle va en la columna "descripcion": tipo de combustible + hora
         if hora_ticket:
@@ -206,13 +203,11 @@ async def subir_ticket_grifo(
                 tipo_documento, numero_documento, fecha, hora, proveedor, 
                 descripcion, evento_asociado, subtotal, impuesto, 
                 total, archivo_ruta, categoria, kilometraje, cantidad_combustible, ruc, imagen_base64
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
         """, (
             tipo_doc_final, numero_doc, fecha_hoy, hora_ticket, proveedor_ia, 
             descripcion_final, placa, subtotal_monto, igv_monto, total_monto, "PENDIENTE_DESCARGA", "Combustible y Peajes", kilometraje, cantidad_combustible, ruc_ia, foto_b64
         ))
-
-        cursor.execute("SELECT id FROM facturas_recibidas ORDER BY id DESC LIMIT 1")
         id_factura = cursor.fetchone()[0]
 
         cursor.execute("""
