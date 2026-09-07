@@ -9,7 +9,7 @@ from google import genai
 from google.genai import types
 from conexion import conectar_db, liberar_conexion
 
-# --- CONFIGURACI脫N DE LA IA (GOOGLE GEMINI) PARA OCR DE TICKETS ---
+# --- CONFIGURACIÓN DE LA IA (GOOGLE GEMINI) PARA OCR DE TICKETS ---
 # Clave GRATIS de Google AI Studio -> variable de entorno GEMINI_API_KEY en Render.
 # https://aistudio.google.com/apikey
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip() or "AQ.Ab8RN6LTyHmVNUALwk6Wk7b2EMSzbZrVXVjg-cKUH7cSwnJ0Iw"
@@ -62,59 +62,59 @@ async def subir_ticket_grifo(
         try:
             if cliente_ia is None:
                 raise ValueError("GEMINI_API_KEY no configurada en el servidor")
-            print(f"馃 IA Analizando el ticket de la placa {placa}...")
+            print(f"🤖 IA Analizando el ticket de la placa {placa}...")
             
             # Pasamos la imagen directamente sin guardarla en disco
             archivo_ia = types.Part.from_bytes(data=foto_bytes, mime_type=foto.content_type or 'image/jpeg')
             
             prompt = """
-            Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que est谩 impreso en esta boleta/factura electr贸nica de combustible (grifo). NO inventes datos. Extrae en formato JSON estricto:
+            Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en esta boleta/factura electrónica de combustible (grifo). NO inventes datos. Extrae en formato JSON estricto:
             - "numero_documento": (serie y correlativo, ej. F531-00129762)
             - "fecha": (fecha del documento en DD/MM/YYYY, ej. 30/07/2026)
             - "hora": (hora del documento en HH:MM, ej. 17:12)
-            - "proveedor": (raz贸n social o nombre del establecimiento, ej. REPSOL COMERCIAL S.A.C.)
-            - "ruc": (exactamente los 11 d铆gitos del RUC, ej. 2050384021)
-            - "direccion": (direcci贸n del establecimiento)
+            - "proveedor": (razón social o nombre del establecimiento, ej. REPSOL COMERCIAL S.A.C.)
+            - "ruc": (exactamente los 11 dígitos del RUC, ej. 2050384021)
+            - "direccion": (dirección del establecimiento)
             - "tipo_combustible": (ej. Gasohol Premium, Diesel, GLP)
             - "cantidad": (cantidad con unidad, ej. 4.002 GAL)
             - "subtotal": (importe sin IGV, ej. 84.75)
             - "igv": (importe del IGV, ej. 15.25)
             - "total": (importe total / gran total, ej. 100.00)
-            Reglas: montos como n煤meros con punto decimal, sin s铆mbolo de moneda ni comas. RUC solo 11 d铆gitos.
+            Reglas: montos como números con punto decimal, sin símbolo de moneda ni comas. RUC solo 11 dígitos.
             """
             
             # Intentar varios modelos (3.5-flash puede estar saturado -> fallback)
             respuesta = None
             for modelo in ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash"):
                 try:
-                    print(f"馃 Probando modelo {modelo}...")
+                    print(f"🤖 Probando modelo {modelo}...")
                     respuesta = cliente_ia.models.generate_content(
                         model=modelo, contents=[prompt, archivo_ia])
                     if respuesta is not None and (respuesta.text or "").strip():
                         break
                 except Exception as e:
-                    print(f"鈿狅笍 Modelo {modelo} fall贸: {e}")
+                    print(f"⚠️ Modelo {modelo} falló: {e}")
             if respuesta is None or not (respuesta.text or "").strip():
-                raise ValueError("La IA no devolvi贸 texto")
+                raise ValueError("La IA no devolvió texto")
             texto_ia = respuesta.text or ""
             
             match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
             
             if match:
                 datos_ia = json.loads(match.group(0))
-                numero_doc = datos_ia.get("numero_documento", "POR-ASIGNAR")
-                fecha_ticket = str(datos_ia.get("fecha", "")).strip()
-                hora_ticket = str(datos_ia.get("hora", "")).strip()
+                numero_doc = str(datos_ia.get("numero_documento") or "POR-ASIGNAR")
+                fecha_ticket = str(datos_ia.get("fecha") or "").strip()
+                hora_ticket = str(datos_ia.get("hora") or "").strip()
                 subtotal_monto = _a_float(datos_ia.get("subtotal"))
                 igv_monto = _a_float(datos_ia.get("igv"))
                 total_monto = _a_float(datos_ia.get("total"))
-                tipo_combustible = datos_ia.get("tipo_combustible", "NO INDICA")
-                cantidad_combustible = datos_ia.get("cantidad", "0")
-                proveedor_ia = datos_ia.get("proveedor", "GRIFO (Desde App)").upper()
-                ruc_ia = datos_ia.get("ruc", "")
-                direccion_ia = datos_ia.get("direccion", "Direcci贸n no indicada")
+                tipo_combustible = str(datos_ia.get("tipo_combustible") or "NO INDICA")
+                cantidad_combustible = str(datos_ia.get("cantidad") or "0")
+                proveedor_ia = str(datos_ia.get("proveedor") or "GRIFO (Desde App)").upper()
+                ruc_ia = str(datos_ia.get("ruc") or "")
+                direccion_ia = str(datos_ia.get("direccion") or "Dirección no indicada")
                 
-                # Respaldo matem谩tico
+                # Respaldo matemático
                 if subtotal_monto == 0.0 and total_monto > 0:
                     subtotal_monto = round(total_monto / 1.18, 2)
                     igv_monto = round(total_monto - subtotal_monto, 2)
@@ -122,12 +122,12 @@ async def subir_ticket_grifo(
                 raise ValueError("No JSON found")
             
         except Exception as e:
-            print(f"鈿狅笍 Error IA: {e}")
+            print(f"⚠️ Error IA: {e}")
 
         # 3. GUARDAR EN LA BASE DE DATOS (SUPABASE)
         cursor = conn.cursor()
         
-        # Proveedores autom谩ticos
+        # Proveedores automáticos
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
             try:
                 cursor.execute("SELECT ruc FROM proveedores WHERE ruc = %s", (ruc_ia,))
@@ -144,11 +144,11 @@ async def subir_ticket_grifo(
             cursor.execute("SELECT COUNT(*) FROM facturas_recibidas WHERE numero_documento = %s AND proveedor = %s", (numero_doc, proveedor_ia))
             if cursor.fetchone()[0] > 0:
                 liberar_conexion(conn)
-                return {"status": "warning", "mensaje": f"El ticket {numero_doc} ya est谩 registrado."}
+                return {"status": "warning", "mensaje": f"El ticket {numero_doc} ya está registrado."}
 
         cursor.execute("UPDATE flota_vehiculos SET kilometraje = %s WHERE placa = %s", (kilometraje, placa))
 
-        # Crear columnas din谩micas (Incluyendo el almac茅n temporal de la foto "imagen_base64")
+        # Crear columnas dinámicas (Incluyendo el almacén temporal de la foto "imagen_base64")
         for col in ["kilometraje", "cantidad_combustible", "ruc", "hora"]:
             try:
                 cursor.execute(f"ALTER TABLE facturas_recibidas ADD COLUMN {col} VARCHAR(50);")
@@ -168,7 +168,7 @@ async def subir_ticket_grifo(
         fecha_hoy = fecha_ticket or datetime.now().strftime("%d/%m/%Y")
         tipo_doc_final = "Factura (18% IGV)" if numero_doc.startswith("F") else "Boleta / Ticket"
         
-        # INSERTAMOS INDICANDO QUE EL ARCHIVO EST脕 "PENDIENTE_DESCARGA" Y METEMOS LA FOTO EN LA NUBE
+        # INSERTAMOS INDICANDO QUE EL ARCHIVO ESTÁ "PENDIENTE_DESCARGA" Y METEMOS LA FOTO EN LA NUBE
         cursor.execute("""
             INSERT INTO facturas_recibidas (
                 tipo_documento, numero_documento, fecha, hora, proveedor, 
@@ -205,7 +205,7 @@ async def subir_ticket_grifo(
 
 @app.post("/registrar-inspeccion/")
 async def registrar_inspeccion(request: Request):
-    """Recibe una inspecci贸n vehicular (JSON con fotos/firmas en base64) y la guarda en Supabase."""
+    """Recibe una inspección vehicular (JSON con fotos/firmas en base64) y la guarda en Supabase."""
     datos = await request.json()
     conn = conectar_db()
     if not conn:
@@ -213,7 +213,7 @@ async def registrar_inspeccion(request: Request):
 
     try:
         cursor = conn.cursor()
-        # Asegura la existencia de la tabla (tambi茅n puedes ejecutar inspeccion_vehicular.sql).
+        # Asegura la existencia de la tabla (también puedes ejecutar inspeccion_vehicular.sql).
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS inspecciones (
                 id SERIAL PRIMARY KEY,
@@ -238,7 +238,7 @@ async def registrar_inspeccion(request: Request):
             json.dumps(datos, ensure_ascii=False),
         ))
         conn.commit()
-        return {"status": "success", "mensaje": "Inspecci贸n registrada correctamente."}
+        return {"status": "success", "mensaje": "Inspección registrada correctamente."}
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=400, detail=str(e))
@@ -248,6 +248,6 @@ async def registrar_inspeccion(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    # En la nube el puerto es din谩mico, esto lo configura autom谩ticamente
+    # En la nube el puerto es dinámico, esto lo configura automáticamente
     port = int(os.environ.get("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
