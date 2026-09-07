@@ -10,3 +10,10 @@ python-multipart
 google-genai
 keyring
 certifi
+fastapi
+
+
+
+
+
+
