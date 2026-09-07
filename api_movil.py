@@ -83,12 +83,22 @@ async def subir_ticket_grifo(
             Reglas: montos como números con punto decimal, sin símbolo de moneda ni comas. RUC solo 11 dígitos.
             """
             
-            respuesta = cliente_ia.models.generate_content(
-                model='gemini-3.5-flash',
-                contents=[prompt, archivo_ia]
-            )
+            # Intentar varios modelos (3.5-flash puede estar saturado -> fallback)
+            respuesta = None
+            for modelo in ("gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"):
+                try:
+                    print(f"🤖 Probando modelo {modelo}...")
+                    respuesta = cliente_ia.models.generate_content(
+                        model=modelo, contents=[prompt, archivo_ia])
+                    if respuesta is not None and (respuesta.text or "").strip():
+                        break
+                except Exception as e:
+                    print(f"⚠️ Modelo {modelo} falló: {e}")
+            if respuesta is None or not (respuesta.text or "").strip():
+                raise ValueError("La IA no devolvió texto")
+            texto_ia = respuesta.text or ""
             
-            match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
+            match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
             
             if match:
                 datos_ia = json.loads(match.group(0))
