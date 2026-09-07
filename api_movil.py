@@ -67,55 +67,38 @@ async def subir_ticket_grifo(
             archivo_ia = {'mime_type': foto.content_type, 'data': foto_bytes}
             
             prompt = """
-            Lee EXACTAMENTE lo impreso en esta boleta/factura de combustible (grifo). NO inventes datos.
-            Devuelve SOLO un objeto JSON (sin markdown, sin explicaciones) con estas claves exactas:
-            {
-              "numero_documento": "serie y correlativo (ej. F001-00012345)",
-              "fecha": "fecha del documento DD/MM/YYYY",
-              "hora": "hora del documento HH:MM",
-              "empresa": "razón social o nombre del establecimiento",
-              "ruc": "solo los 11 dígitos del RUC",
-              "direccion": "dirección del establecimiento",
-              "tipo_combustible": "ej. DIESEL, GASOHOL 90, GLP",
-              "cantidad": "cantidad con unidad (ej. 10.500 GAL)",
-              "subtotal": "número decimal",
-              "igv": "número decimal",
-              "total": "número decimal del importe total a pagar"
-            }
-            Reglas:
-            - Montos: solo números con punto decimal, sin símbolo de moneda (ej. 84.75).
-            - RUC: exactamente 11 dígitos.
-            - Fecha DD/MM/YYYY y hora HH:MM.
-            - Si un dato no aparece, usa "".
+            Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en la imagen. Bajo ninguna circunstancia copies los datos de ejemplo. Extrae la información en formato JSON estricto:
+            - "numero_documento": (El número de serie y correlativo exacto impreso, ej. F001-00012345)
+            - "subtotal": (solo el número decimal de las operaciones gravadas o subtotal, ej. 84.75)
+            - "igv": (solo el número decimal del IGV o impuesto, ej. 15.25)
+            - "total": (solo el número decimal del importe total, ej. 100.00)
+            - "tipo_combustible": (ej. Diesel, Gasohol 95)
+            - "cantidad": (ej. 10.500 GAL)
+            - "proveedor": (El nombre del establecimiento comercial)
+            - "ruc": (Los 11 dígitos del RUC, ej. 20123456789)
+            - "direccion": (La dirección del comprobante)
             """
             
             respuesta = cliente_ia.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.5-flash',
                 contents=[archivo_ia, prompt]
             )
             
-            texto = respuesta.text or ""
-            texto = re.sub(r'```(?:json)?', '', texto).strip()
-            match = re.search(r'\{.*\}', texto, re.DOTALL)
+            match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
             
             if match:
                 datos_ia = json.loads(match.group(0))
-                numero_doc = str(datos_ia.get("numero_documento", "")).strip() or "POR-ASIGNAR"
-                fecha_ticket = str(datos_ia.get("fecha", "")).strip()
-                hora_ticket = str(datos_ia.get("hora", "")).strip()
-                tipo_combustible = str(datos_ia.get("tipo_combustible", "")).strip() or "NO INDICA"
-                cantidad_combustible = str(datos_ia.get("cantidad", "0")).strip() or "0"
-                proveedor_ia = (str(datos_ia.get("empresa") or datos_ia.get("proveedor") or "").strip().upper()
-                                or "GRIFO (Desde App)")
-                ruc_ia = re.sub(r'\D', '', str(datos_ia.get("ruc", "")))
-                direccion_ia = str(datos_ia.get("direccion", "")).strip() or "Dirección no indicada"
+                numero_doc = datos_ia.get("numero_documento", "POR-ASIGNAR")
                 subtotal_monto = _a_float(datos_ia.get("subtotal"))
                 igv_monto = _a_float(datos_ia.get("igv"))
                 total_monto = _a_float(datos_ia.get("total"))
+                tipo_combustible = datos_ia.get("tipo_combustible", "NO INDICA")
+                cantidad_combustible = datos_ia.get("cantidad", "0")
+                proveedor_ia = datos_ia.get("proveedor", "GRIFO (Desde App)").upper()
+                ruc_ia = datos_ia.get("ruc", "")
+                direccion_ia = datos_ia.get("direccion", "Dirección no indicada")
                 
                 # Respaldo matemático
-                if total_monto <= 0 and (subtotal_monto > 0 or igv_monto > 0):
-                    total_monto = round(subtotal_monto + igv_monto, 2)
                 if subtotal_monto == 0.0 and total_monto > 0:
                     subtotal_monto = round(total_monto / 1.18, 2)
                     igv_monto = round(total_monto - subtotal_monto, 2)
