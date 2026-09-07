@@ -5,7 +5,6 @@ import os
 import json
 import re
 from datetime import datetime
-import time
 from google import genai
 from google.genai import types
 from conexion import conectar_db, liberar_conexion
@@ -15,17 +14,6 @@ from conexion import conectar_db, liberar_conexion
 # https://aistudio.google.com/apikey
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip() or "AQ.Ab8RN6LTyHmVNUALwk6Wk7b2EMSzbZrVXVjg-cKUH7cSwnJ0Iw"
 cliente_ia = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-
-# Modelos de visión en orden de preferencia. Los alias "-latest" son estables
-# aunque Google cambie el número de versión; los específicos sirven de respaldo.
-MODELOS_OCR = (
-    "gemini-3.5-flash-lite",
-    "gemini-flash-lite-latest",
-    "gemini-3.1-flash-lite",
-    "gemini-3.5-flash",
-    "gemini-flash-latest",
-    "gemini-2.5-flash",
-)
 # ---------------------------------------------------
 
 
@@ -97,34 +85,20 @@ async def subir_ticket_grifo(
             Reglas: montos como números con punto decimal, sin símbolo de moneda ni comas. RUC solo 11 dígitos.
             """
             
-            config_ia = types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.0,
-            )
-            
-            # Intentar varios modelos (con reintento ante saturación 503/429)
+            # Llamada única y ligera: un solo modelo, un solo intento, sin esperas.
             texto_ia = ""
-            for modelo in MODELOS_OCR:
-                for intento in range(2):
-                    try:
-                        print(f"🤖 Probando modelo {modelo} (intento {intento+1})...")
-                        respuesta = cliente_ia.models.generate_content(
-                            model=modelo,
-                            contents=[prompt, archivo_ia],
-                            config=config_ia,
-                        )
-                        texto_ia = (respuesta.text or "").strip()
-                        if texto_ia:
-                            break
-                    except Exception as e:
-                        print(f"⚠️ Modelo {modelo} intento {intento+1} falló: {e}")
-                        error_ia = str(e)
-                        if intento < 1:
-                            time.sleep(2)  # breve espera por saturación del servicio
-                if texto_ia:
-                    break
+            try:
+                print("🤖 IA leyendo el ticket con gemini-3.5-flash-lite...")
+                respuesta = cliente_ia.models.generate_content(
+                    model="gemini-3.5-flash-lite",
+                    contents=[prompt, archivo_ia],
+                )
+                texto_ia = (respuesta.text or "").strip()
+            except Exception as e:
+                error_ia = str(e)
+                print(f"⚠️ Error IA: {e}")
             if not texto_ia:
-                raise ValueError(f"La IA no devolvió texto. Último error: {error_ia[:300]}")
+                raise ValueError(f"La IA no devolvió texto. Error: {error_ia[:300]}")
             
             match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
             
