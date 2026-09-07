@@ -126,7 +126,11 @@ async def subir_ticket_grifo(
             match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
             
             if match:
-                datos_ia = json.loads(match.group(0))
+                try:
+                    datos_ia = json.loads(match.group(0))
+                except Exception as e:
+                    print(f"⚠️ JSON inválido devuelto por IA: {match.group(0)[:500]}")
+                    raise ValueError(f"La IA devolvió un JSON inválido: {e}")
                 numero_doc = str(datos_ia.get("numero_documento") or "POR-ASIGNAR")
                 fecha_ticket = str(datos_ia.get("fecha") or "").strip()
                 hora_ticket = str(datos_ia.get("hora") or "").strip()
@@ -145,6 +149,7 @@ async def subir_ticket_grifo(
                     igv_monto = round(total_monto - subtotal_monto, 2)
                 ocr_ok = True
             else:
+                print(f"⚠️ IA no devolvió JSON. Texto recibido: {texto_ia[:500]}")
                 raise ValueError("La IA no devolvió JSON válido")
             
         except Exception as e:
