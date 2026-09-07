@@ -6,12 +6,13 @@ import json
 import re
 from datetime import datetime
 from google import genai
+from google.genai import types
 from conexion import conectar_db, liberar_conexion
 
 # --- CONFIGURACIÓN DE LA IA (GOOGLE GEMINI) PARA OCR DE TICKETS ---
 # Clave GRATIS de Google AI Studio -> variable de entorno GEMINI_API_KEY en Render.
 # https://aistudio.google.com/apikey
-GEMINI_API_KEY = os.environ.get("AQ.Ab8RN6LTyHmVNUALwk6Wk7b2EMSzbZrVXVjg-cKUH7cSwnJ0Iw", "").strip()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip() or "AQ.Ab8RN6LTyHmVNUALwk6Wk7b2EMSzbZrVXVjg-cKUH7cSwnJ0Iw"
 cliente_ia = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # ---------------------------------------------------
 
@@ -64,7 +65,7 @@ async def subir_ticket_grifo(
             print(f"🤖 IA Analizando el ticket de la placa {placa}...")
             
             # Pasamos la imagen directamente sin guardarla en disco
-            archivo_ia = {'mime_type': foto.content_type, 'data': foto_bytes}
+            archivo_ia = types.Part.from_bytes(data=foto_bytes, mime_type=foto.content_type or 'image/jpeg')
             
             prompt = """
             Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en esta boleta/factura electrónica de combustible (grifo). NO inventes datos. Extrae en formato JSON estricto:
@@ -84,7 +85,7 @@ async def subir_ticket_grifo(
             
             respuesta = cliente_ia.models.generate_content(
                 model='gemini-3.5-flash',
-                contents=[archivo_ia, prompt]
+                contents=[prompt, archivo_ia]
             )
             
             match = re.search(r'\{.*\}', respuesta.text, re.DOTALL)
