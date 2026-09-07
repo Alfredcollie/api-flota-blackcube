@@ -41,33 +41,6 @@ def _a_float(v):
     return float(m.group(0)) if m else 0.0
 
 
-def _asegurar_tablas_gps(cursor, conn):
-    """Crea las tablas de geocerca y asistencia si no existen (mismo esquema que el escritorio)."""
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS configuracion_geocerca (
-            id SERIAL PRIMARY KEY,
-            latitud NUMERIC,
-            longitud NUMERIC,
-            radio NUMERIC,
-            estado VARCHAR(20) DEFAULT 'Activo'
-        )
-    """)
-    cursor.execute("SELECT COUNT(*) FROM configuracion_geocerca")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO configuracion_geocerca (latitud, longitud, radio, estado) VALUES (-12.046374, -77.042793, 100.0, 'Activo')")
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS registro_asistencia (
-            id SERIAL PRIMARY KEY,
-            placa VARCHAR(50),
-            fecha VARCHAR(20),
-            hora_entrada VARCHAR(20),
-            hora_salida VARCHAR(20),
-            estado VARCHAR(50)
-        )
-    """)
-    conn.commit()
-
-
 app = FastAPI(title="API - Flota Automotriz Black Cube")
 
 @app.post("/subir-ticket/")
@@ -298,91 +271,6 @@ async def registrar_inspeccion(request: Request):
         ))
         conn.commit()
         return {"status": "success", "mensaje": "Inspección registrada correctamente."}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        liberar_conexion(conn)
-
-
-@app.get("/geocerca-config/")
-async def geocerca_config():
-    """Devuelve latitud, longitud y radio de la base para el radar GPS de la app móvil."""
-    conn = conectar_db()
-    if not conn:
-        raise HTTPException(status_code=500, detail="Error conectando a la base de datos.")
-    try:
-        cursor = conn.cursor()
-        _asegurar_tablas_gps(cursor, conn)
-        cursor.execute("SELECT latitud, longitud, radio, estado FROM configuracion_geocerca LIMIT 1")
-        fila = cursor.fetchone()
-        if not fila:
-            raise HTTPException(status_code=500, detail="No hay geocerca configurada.")
-        return {
-            "latitud": float(fila[0]),
-            "longitud": float(fila[1]),
-            "radio": float(fila[2]),
-            "estado": str(fila[3] or "Activo"),
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        liberar_conexion(conn)
-
-
-@app.post("/registrar-asistencia/")
-async def registrar_asistencia(
-    placa: str = Form(...),
-    evento: str = Form(...)
-):
-    """Registra la ENTRADA/SALIDA de un vehículo a la base (radar GPS de la app móvil)."""
-    conn = conectar_db()
-    if not conn:
-        raise HTTPException(status_code=500, detail="Error conectando a la base de datos.")
-    try:
-        cursor = conn.cursor()
-        _asegurar_tablas_gps(cursor, conn)
-
-        placa = (placa or "").strip().upper()
-        evento = (evento or "").strip().upper()
-        if not placa:
-            raise HTTPException(status_code=400, detail="Placa vacía.")
-        ahora = datetime.now()
-        fecha_hoy = ahora.strftime("%d/%m/%Y")
-        hora_hoy = ahora.strftime("%H:%M:%S")
-
-        if evento == "ENTRADA":
-            cursor.execute(
-                "SELECT id FROM registro_asistencia WHERE placa = %s AND (hora_salida IS NULL OR hora_salida = '') ORDER BY id DESC LIMIT 1",
-                (placa,))
-            if cursor.fetchone():
-                return {"status": "info", "mensaje": f"{placa} ya tiene una entrada abierta."}
-            cursor.execute(
-                "INSERT INTO registro_asistencia (placa, fecha, hora_entrada, hora_salida, estado) VALUES (%s, %s, %s, %s, %s)",
-                (placa, fecha_hoy, hora_hoy, "", "EN BASE"))
-            conn.commit()
-            return {"status": "success", "mensaje": f"Entrada registrada: {placa} a las {hora_hoy}."}
-
-        elif evento == "SALIDA":
-            cursor.execute(
-                "SELECT id FROM registro_asistencia WHERE placa = %s AND (hora_salida IS NULL OR hora_salida = '') ORDER BY id DESC LIMIT 1",
-                (placa,))
-            fila = cursor.fetchone()
-            if not fila:
-                return {"status": "info", "mensaje": f"No hay entrada abierta para {placa}."}
-            cursor.execute(
-                "UPDATE registro_asistencia SET hora_salida = %s, estado = %s WHERE id = %s",
-                (hora_hoy, "COMPLETADO", fila[0]))
-            conn.commit()
-            return {"status": "success", "mensaje": f"Salida registrada: {placa} a las {hora_hoy}."}
-
-        else:
-            raise HTTPException(status_code=400, detail=f"Evento no reconocido: {evento}")
-
-    except HTTPException:
-        raise
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=400, detail=str(e))
