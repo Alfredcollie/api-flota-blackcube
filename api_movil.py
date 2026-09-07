@@ -29,6 +29,28 @@ def _a_float(v):
     return float(m.group(0)) if m else 0.0
 
 
+def _preprocesar_imagen(foto_bytes):
+    """Prepara la foto para el OCR: redimensiona, escala de grises y realza contraste.
+    Mejora mucho la lectura de tickets térmicos (desvanecidos, pequeños, torcidos)."""
+    try:
+        from PIL import Image, ImageEnhance, ImageOps
+        import io
+        img = Image.open(io.BytesIO(foto_bytes))
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        max_dim = 1600
+        w, h = img.size
+        if max(w, h) > max_dim:
+            escala = max_dim / max(w, h)
+            img = img.resize((int(w * escala), int(h * escala)), Image.LANCZOS)
+        img = ImageOps.grayscale(img)
+        img = ImageEnhance.Contrast(img).enhance(2.0)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+    except Exception:
+        return foto_bytes
+
+
 app = FastAPI(title="API - Flota Automotriz Black Cube")
 
 @app.post("/subir-ticket/")
@@ -66,23 +88,24 @@ async def subir_ticket_grifo(
                 raise ValueError("GEMINI_API_KEY no configurada en el servidor")
             print(f"🤖 IA Analizando el ticket de la placa {placa}...")
             
-            # Pasamos la imagen directamente sin guardarla en disco
-            archivo_ia = types.Part.from_bytes(data=foto_bytes, mime_type=foto.content_type or 'image/jpeg')
+            # Preprocesamos la foto (resize + contraste) y se la pasamos a la IA.
+            foto_ocr = _preprocesar_imagen(foto_bytes)
+            archivo_ia = types.Part.from_bytes(data=foto_ocr, mime_type='image/jpeg')
             
             prompt = """
-            Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en esta boleta/factura electrónica de combustible (grifo). NO inventes datos. Extrae en formato JSON estricto:
-            - "numero_documento": (serie y correlativo, ej. F531-00129762)
-            - "fecha": (fecha del documento en DD/MM/YYYY, ej. 30/07/2026)
-            - "hora": (hora del documento en HH:MM, ej. 17:12)
-            - "proveedor": (razón social o nombre del establecimiento, ej. REPSOL COMERCIAL S.A.C.)
-            - "ruc": (exactamente los 11 dígitos del RUC, ej. 2050384021)
-            - "direccion": (dirección del establecimiento)
-            - "tipo_combustible": (ej. Gasohol Premium, Diesel, GLP)
-            - "cantidad": (cantidad con unidad, ej. 4.002 GAL)
-            - "subtotal": (importe sin IGV, ej. 84.75)
-            - "igv": (importe del IGV, ej. 15.25)
-            - "total": (importe total / gran total, ej. 100.00)
-            Reglas: montos como números con punto decimal, sin símbolo de moneda ni comas. RUC solo 11 dígitos.
+            Eres un lector OCR de boletas/facturas de combustible (grifo). La foto puede ser un ticket térmico pequeño, borroso o torcido. Devuelve SOLO un JSON válido, sin texto adicional, con estas claves exactas:
+            - "numero_documento": serie y correlativo (ej. "F531-00129762"). Si no se ve, "".
+            - "fecha": fecha en DD/MM/YYYY. Si no se ve, "".
+            - "hora": hora en HH:MM. Si no se ve, "".
+            - "proveedor": razón social o nombre del establecimiento. Si no se ve, "".
+            - "ruc": exactamente 11 dígitos del RUC. Si no se ve o no son 11 dígitos, "".
+            - "direccion": dirección del establecimiento. Si no se ve, "".
+            - "tipo_combustible": ej. "Gasohol Premium", "Diesel", "GLP". Si no se ve, "".
+            - "cantidad": cantidad con unidad (ej. "4.002 GAL"). Si no se ve, "".
+            - "subtotal": importe sin IGV, número con punto decimal (ej. 84.75). Si no se ve, 0.
+            - "igv": importe del IGV (ej. 15.25). Si no se ve, 0.
+            - "total": importe total / gran total (ej. 100.00). Si no se ve, 0.
+            Reglas: NO inventes datos. Montos como números con punto decimal, sin símbolo de moneda ni comas. Si un campo no se ve, devuélvelo vacío o 0.
             """
             
             # Llamada única y ligera: un solo modelo, un solo intento, sin esperas.

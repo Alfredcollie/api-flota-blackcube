@@ -1,19 +1,9 @@
-# ============================================================
-# Dependencias de BlackCube / Control de Eventos
-# Compatibles con Windows y macOS (Apple Silicon M1/M2).
-# Se compilan con Python 3.11 (ver .github/workflows/compilar_mac.yml).
-# ============================================================
+# Dependencias de la API Flota Automotriz (Render / FastAPI)
 fastapi
 uvicorn
 psycopg2-binary
 python-multipart
+Pillow
 google-genai
 keyring
 certifi
-fastapi
-
-
-
-
-
-
