@@ -67,16 +67,19 @@ async def subir_ticket_grifo(
             archivo_ia = {'mime_type': foto.content_type, 'data': foto_bytes}
             
             prompt = """
-            Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en la imagen. Bajo ninguna circunstancia copies los datos de ejemplo. Extrae la información en formato JSON estricto:
-            - "numero_documento": (El número de serie y correlativo exacto impreso, ej. F001-00012345)
-            - "subtotal": (solo el número decimal de las operaciones gravadas o subtotal, ej. 84.75)
-            - "igv": (solo el número decimal del IGV o impuesto, ej. 15.25)
-            - "total": (solo el número decimal del importe total, ej. 100.00)
-            - "tipo_combustible": (ej. Diesel, Gasohol 95)
-            - "cantidad": (ej. 10.500 GAL)
-            - "proveedor": (El nombre del establecimiento comercial)
-            - "ruc": (Los 11 dígitos del RUC, ej. 20123456789)
-            - "direccion": (La dirección del comprobante)
+            Eres un auditor experto y muy detallista. Tu tarea es leer EXACTAMENTE lo que está impreso en esta boleta/factura electrónica de combustible (grifo). NO inventes datos. Extrae en formato JSON estricto:
+            - "numero_documento": (serie y correlativo, ej. F531-00129762)
+            - "fecha": (fecha del documento en DD/MM/YYYY, ej. 30/07/2026)
+            - "hora": (hora del documento en HH:MM, ej. 17:12)
+            - "proveedor": (razón social o nombre del establecimiento, ej. REPSOL COMERCIAL S.A.C.)
+            - "ruc": (exactamente los 11 dígitos del RUC, ej. 2050384021)
+            - "direccion": (dirección del establecimiento)
+            - "tipo_combustible": (ej. Gasohol Premium, Diesel, GLP)
+            - "cantidad": (cantidad con unidad, ej. 4.002 GAL)
+            - "subtotal": (importe sin IGV, ej. 84.75)
+            - "igv": (importe del IGV, ej. 15.25)
+            - "total": (importe total / gran total, ej. 100.00)
+            Reglas: montos como números con punto decimal, sin símbolo de moneda ni comas. RUC solo 11 dígitos.
             """
             
             respuesta = cliente_ia.models.generate_content(
@@ -89,6 +92,8 @@ async def subir_ticket_grifo(
             if match:
                 datos_ia = json.loads(match.group(0))
                 numero_doc = datos_ia.get("numero_documento", "POR-ASIGNAR")
+                fecha_ticket = str(datos_ia.get("fecha", "")).strip()
+                hora_ticket = str(datos_ia.get("hora", "")).strip()
                 subtotal_monto = _a_float(datos_ia.get("subtotal"))
                 igv_monto = _a_float(datos_ia.get("igv"))
                 total_monto = _a_float(datos_ia.get("total"))
