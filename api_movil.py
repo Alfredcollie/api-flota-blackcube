@@ -85,7 +85,7 @@ async def subir_ticket_grifo(
             
             # Intentar varios modelos (3.5-flash puede estar saturado -> fallback)
             respuesta = None
-            for modelo in ("gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"):
+            for modelo in ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash"):
                 try:
                     print(f"🤖 Probando modelo {modelo}...")
                     respuesta = cliente_ia.models.generate_content(
