@@ -77,11 +77,13 @@ async def subir_ticket_grifo(
         cantidad_combustible = "0"
         proveedor_ia = "GRIFO (Desde App)"
         ruc_ia = ""
+        ruc_cliente = ""
         direccion_ia = ""
         fecha_ticket = ""
         hora_ticket = ""
         ocr_ok = False
         error_ia = ""
+        texto_ia = ""
         
         try:
             if cliente_ia is None:
@@ -98,7 +100,8 @@ async def subir_ticket_grifo(
             - "fecha": fecha en DD/MM/YYYY. Si no se ve, "".
             - "hora": hora en HH:MM. Si no se ve, "".
             - "proveedor": razón social o nombre del establecimiento. Si no se ve, "".
-            - "ruc": exactamente 11 dígitos del RUC. Si no se ve o no son 11 dígitos, "".
+            - "ruc": exactamente 11 dígitos del RUC del emisor (grifo). Si no se ve o no son 11 dígitos, "".
+            - "ruc_cliente": el RUC del cliente/adquirente al que se factura (11 dígitos). Si no se ve o no son 11 dígitos, "".
             - "direccion": dirección del establecimiento. Si no se ve, "".
             - "tipo_combustible": ej. "Gasohol Premium", "Diesel", "GLP". Si no se ve, "".
             - "cantidad": cantidad con unidad (ej. "4.002 GAL"). Si no se ve, "".
@@ -141,6 +144,7 @@ async def subir_ticket_grifo(
                 cantidad_combustible = str(datos_ia.get("cantidad") or "0")
                 proveedor_ia = str(datos_ia.get("proveedor") or "GRIFO (Desde App)").upper()
                 ruc_ia = str(datos_ia.get("ruc") or "")
+                ruc_cliente = str(datos_ia.get("ruc_cliente") or "")
                 direccion_ia = str(datos_ia.get("direccion") or "Dirección no indicada")
                 
                 # Respaldo matemático
@@ -172,7 +176,25 @@ async def subir_ticket_grifo(
             conn.rollback()
             cuenta_grifo = ""
         conn.commit()
-        
+
+        # Validación: la factura debe contener el RUC de la empresa (Configuración General).
+        ruc_empresa = ""
+        try:
+            cursor.execute("SELECT valor FROM configuracion_sistema WHERE clave = 'ruc_empresa'")
+            fila_ruc = cursor.fetchone()
+            if fila_ruc:
+                ruc_empresa = (fila_ruc[0] or "").strip()
+        except Exception:
+            conn.rollback()
+            ruc_empresa = ""
+
+        if ruc_empresa:
+            ruc_empresa_n = "".join(ch for ch in ruc_empresa if ch.isdigit())
+            ruc_cliente_n = "".join(ch for ch in (ruc_cliente or "") if ch.isdigit())
+            if ruc_empresa_n and ruc_cliente_n != ruc_empresa_n:
+                ruc_mostrado = ruc_cliente if ruc_cliente else "no leído"
+                return {"status": "warning", "mensaje": f"Factura no registrada: el RUC del comprador ({ruc_mostrado}) no coincide con el RUC de la empresa ({ruc_empresa})."}
+
         # Proveedores automáticos
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
             try:
