@@ -68,8 +68,8 @@ async def subir_ticket_grifo(
     ruc_empresa = ""
     try:
         cursor_pre = conn.cursor()
-        cursor_pre.execute("CREATE TABLE IF NOT EXISTS configuracion_sistema (clave VARCHAR(255) PRIMARY KEY, valor TEXT)")
-        cursor_pre.execute("SELECT valor FROM configuracion_sistema WHERE clave = 'ruc_empresa'")
+        cursor_pre.execute("CREATE TABLE IF NOT EXISTS config_general (clave VARCHAR(255) PRIMARY KEY, valor TEXT)")
+        cursor_pre.execute("SELECT valor FROM config_general WHERE clave = 'ruc_empresa'")
         fila_pre = cursor_pre.fetchone()
         if fila_pre:
             ruc_empresa = (fila_pre[0] or "").strip()
@@ -181,9 +181,9 @@ async def subir_ticket_grifo(
         # Cuenta bancaria asignada para pagos del App Grifo (Configuración General).
         cuenta_grifo = ""
         try:
-            cursor.execute("CREATE TABLE IF NOT EXISTS configuracion_sistema (clave VARCHAR(255) PRIMARY KEY, valor TEXT)")
+            cursor.execute("CREATE TABLE IF NOT EXISTS config_general (clave VARCHAR(255) PRIMARY KEY, valor TEXT)")
             cursor.execute("ALTER TABLE pagos_comprobantes ADD COLUMN IF NOT EXISTS cuenta_origen VARCHAR(255) DEFAULT ''")
-            cursor.execute("SELECT valor FROM configuracion_sistema WHERE clave = 'cuenta_grifo_pagos'")
+            cursor.execute("SELECT valor FROM config_general WHERE clave = 'cuenta_grifo_pagos'")
             fila_cfg = cursor.fetchone()
             if fila_cfg:
                 cuenta_grifo = (fila_cfg[0] or "").strip()
