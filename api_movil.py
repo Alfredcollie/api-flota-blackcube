@@ -14,10 +14,6 @@ from conexion import conectar_db, liberar_conexion
 # https://aistudio.google.com/apikey
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip() or "AQ.Ab8RN6LTyHmVNUALwk6Wk7b2EMSzbZrVXVjg-cKUH7cSwnJ0Iw"
 cliente_ia = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-
-# Marcador de versión: sirve para verificar en los logs de Render qué código está desplegado.
-VERSION_API = "2.2"
-print(f"==== API GRIFO v{VERSION_API} CARGADA (filtro RUC activo, tabla config_general) ====")
 # ---------------------------------------------------
 
 
@@ -67,21 +63,6 @@ async def subir_ticket_grifo(
     if not conn:
         raise HTTPException(status_code=500, detail="Error conectando a la base de datos.")
 
-    # RUC de la empresa desde Configuración General (nube), leído ANTES del OCR
-    # para filtrar las facturas del App Grifo por el RUC del adquirente.
-    ruc_empresa = ""
-    try:
-        cursor_pre = conn.cursor()
-        cursor_pre.execute("CREATE TABLE IF NOT EXISTS config_general (clave VARCHAR(255) PRIMARY KEY, valor TEXT)")
-        cursor_pre.execute("SELECT valor FROM config_general WHERE clave = 'ruc_empresa'")
-        fila_pre = cursor_pre.fetchone()
-        if fila_pre:
-            ruc_empresa = (fila_pre[0] or "").strip()
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        ruc_empresa = ""
-
     try:
         # 1. LEER LA FOTO Y CONVERTIRLA A TEXTO (Base64) PARA LA NUBE
         foto_bytes = await foto.read()
@@ -96,13 +77,11 @@ async def subir_ticket_grifo(
         cantidad_combustible = "0"
         proveedor_ia = "GRIFO (Desde App)"
         ruc_ia = ""
-        ruc_cliente = ""
         direccion_ia = ""
         fecha_ticket = ""
         hora_ticket = ""
         ocr_ok = False
         error_ia = ""
-        texto_ia = ""
         
         try:
             if cliente_ia is None:
@@ -119,8 +98,7 @@ async def subir_ticket_grifo(
             - "fecha": fecha en DD/MM/YYYY. Si no se ve, "".
             - "hora": hora en HH:MM. Si no se ve, "".
             - "proveedor": razón social o nombre del establecimiento. Si no se ve, "".
-            - "ruc": exactamente 11 dígitos del RUC del emisor (grifo). Si no se ve o no son 11 dígitos, "".
-            - "ruc_cliente": el RUC del cliente/adquirente AL QUE SE EMITE LA FACTURA (11 dígitos). En una FACTURA hay DOS RUC: el del grifo (emisor) y el del cliente. Este campo es el del CLIENTE. Si solo aparece UN RUC y no es claramente del grifo, es el del cliente. Si no se ve o no son 11 dígitos, "".
+            - "ruc": exactamente 11 dígitos del RUC. Si no se ve o no son 11 dígitos, "".
             - "direccion": dirección del establecimiento. Si no se ve, "".
             - "tipo_combustible": ej. "Gasohol Premium", "Diesel", "GLP". Si no se ve, "".
             - "cantidad": cantidad con unidad (ej. "4.002 GAL"). Si no se ve, "".
@@ -129,8 +107,6 @@ async def subir_ticket_grifo(
             - "total": importe total / gran total (ej. 100.00). Si no se ve, 0.
             Reglas: NO inventes datos. Montos como números con punto decimal, sin símbolo de moneda ni comas. Si un campo no se ve, devuélvelo vacío o 0.
             """
-            if ruc_empresa:
-                prompt += f"\nIMPORTANTE: La empresa cliente tiene el RUC {ruc_empresa}. Si ves ese RUC (o un RUC de 11 dígitos que NO es del grifo emisor) en el ticket, colócalo en el campo 'ruc_cliente'."
             
             # Llamada única y ligera: un solo modelo, un solo intento, sin esperas.
             texto_ia = ""
@@ -165,7 +141,6 @@ async def subir_ticket_grifo(
                 cantidad_combustible = str(datos_ia.get("cantidad") or "0")
                 proveedor_ia = str(datos_ia.get("proveedor") or "GRIFO (Desde App)").upper()
                 ruc_ia = str(datos_ia.get("ruc") or "")
-                ruc_cliente = str(datos_ia.get("ruc_cliente") or "")
                 direccion_ia = str(datos_ia.get("direccion") or "Dirección no indicada")
                 
                 # Respaldo matemático
@@ -197,22 +172,7 @@ async def subir_ticket_grifo(
             conn.rollback()
             cuenta_grifo = ""
         conn.commit()
-
-        # Validación: la factura debe estar emitida a la empresa (RUC del adquirente).
-        if ruc_empresa:
-            ruc_empresa_n = "".join(ch for ch in ruc_empresa if ch.isdigit())
-            encontrado = False
-            if ruc_cliente and "".join(ch for ch in ruc_cliente if ch.isdigit()) == ruc_empresa_n:
-                encontrado = True
-            if not encontrado and ruc_ia and "".join(ch for ch in ruc_ia if ch.isdigit()) == ruc_empresa_n:
-                encontrado = True
-            if not encontrado and texto_ia and ruc_empresa_n in texto_ia:
-                encontrado = True
-            if not encontrado:
-                diag = f"ruc_cliente='{ruc_cliente}', ruc_emisor='{ruc_ia}', ocr_ok={ocr_ok}"
-                print(f"[RUC FILTRO] Rechazada: {diag} | texto_ia={texto_ia[:300]}")
-                return {"status": "warning", "mensaje": f"Factura no registrada: no se encontró el RUC de la empresa ({ruc_empresa}) en el ticket. {diag}"}
-
+        
         # Proveedores automáticos
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
             try:
@@ -276,8 +236,8 @@ async def subir_ticket_grifo(
 
         conn.commit()
         if ocr_ok:
-            return {"status": "success", "mensaje": f"Ticket procesado y subido a la nube. [v{VERSION_API}]", "version": VERSION_API}
-        return {"status": "warning", "mensaje": f"Ticket guardado, pero la IA no pudo leerlo (datos incompletos). [v{VERSION_API}]", "detalle_ia": error_ia[:300], "version": VERSION_API}
+            return {"status": "success", "mensaje": "Ticket procesado y subido a la nube."}
+        return {"status": "warning", "mensaje": "Ticket guardado, pero la IA no pudo leerlo (datos incompletos).", "detalle_ia": error_ia[:300]}
 
     except Exception as e:
         conn.rollback()
