@@ -14,6 +14,10 @@ from conexion import conectar_db, liberar_conexion
 # https://aistudio.google.com/apikey
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip() or "AQ.Ab8RN6LTyHmVNUALwk6Wk7b2EMSzbZrVXVjg-cKUH7cSwnJ0Iw"
 cliente_ia = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+# Marcador de versión: sirve para verificar en los logs de Render qué código está desplegado.
+VERSION_API = "2.2"
+print(f"==== API GRIFO v{VERSION_API} CARGADA (filtro RUC activo, tabla config_general) ====")
 # ---------------------------------------------------
 
 
@@ -272,8 +276,8 @@ async def subir_ticket_grifo(
 
         conn.commit()
         if ocr_ok:
-            return {"status": "success", "mensaje": "Ticket procesado y subido a la nube."}
-        return {"status": "warning", "mensaje": "Ticket guardado, pero la IA no pudo leerlo (datos incompletos).", "detalle_ia": error_ia[:300]}
+            return {"status": "success", "mensaje": f"Ticket procesado y subido a la nube. [v{VERSION_API}]", "version": VERSION_API}
+        return {"status": "warning", "mensaje": f"Ticket guardado, pero la IA no pudo leerlo (datos incompletos). [v{VERSION_API}]", "detalle_ia": error_ia[:300], "version": VERSION_API}
 
     except Exception as e:
         conn.rollback()
