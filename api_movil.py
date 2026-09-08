@@ -158,6 +158,20 @@ async def subir_ticket_grifo(
 
         # 3. GUARDAR EN LA BASE DE DATOS (SUPABASE)
         cursor = conn.cursor()
+
+        # Cuenta bancaria asignada para pagos del App Grifo (Configuración General).
+        cuenta_grifo = ""
+        try:
+            cursor.execute("CREATE TABLE IF NOT EXISTS configuracion_sistema (clave VARCHAR(255) PRIMARY KEY, valor TEXT)")
+            cursor.execute("ALTER TABLE pagos_comprobantes ADD COLUMN IF NOT EXISTS cuenta_origen VARCHAR(255) DEFAULT ''")
+            cursor.execute("SELECT valor FROM configuracion_sistema WHERE clave = 'cuenta_grifo_pagos'")
+            fila_cfg = cursor.fetchone()
+            if fila_cfg:
+                cuenta_grifo = (fila_cfg[0] or "").strip()
+        except Exception:
+            conn.rollback()
+            cuenta_grifo = ""
+        conn.commit()
         
         # Proveedores automáticos
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
@@ -213,11 +227,11 @@ async def subir_ticket_grifo(
         cursor.execute("""
             INSERT INTO pagos_comprobantes (
                 id_factura, monto_pagado, archivo_ruta, proveedor_nombre, 
-                fecha_pago, categoria_suministro, codigo_cotizacion
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                fecha_pago, categoria_suministro, codigo_cotizacion, cuenta_origen
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             id_factura, total_monto, "PENDIENTE_DESCARGA", 
-            proveedor_ia, fecha_hoy, "Combustible y Peajes", numero_doc
+            proveedor_ia, fecha_hoy, "Combustible y Peajes", numero_doc, cuenta_grifo
         ))
 
         conn.commit()
