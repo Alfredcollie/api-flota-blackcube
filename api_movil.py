@@ -116,7 +116,7 @@ async def subir_ticket_grifo(
             - "hora": hora en HH:MM. Si no se ve, "".
             - "proveedor": razón social o nombre del establecimiento. Si no se ve, "".
             - "ruc": exactamente 11 dígitos del RUC del emisor (grifo). Si no se ve o no son 11 dígitos, "".
-            - "ruc_cliente": el RUC del cliente/adquirente al que se factura (11 dígitos). Si no se ve o no son 11 dígitos, "".
+            - "ruc_cliente": el RUC del cliente/adquirente AL QUE SE EMITE LA FACTURA (11 dígitos). En una FACTURA hay DOS RUC: el del grifo (emisor) y el del cliente. Este campo es el del CLIENTE. Si solo aparece UN RUC y no es claramente del grifo, es el del cliente. Si no se ve o no son 11 dígitos, "".
             - "direccion": dirección del establecimiento. Si no se ve, "".
             - "tipo_combustible": ej. "Gasohol Premium", "Diesel", "GLP". Si no se ve, "".
             - "cantidad": cantidad con unidad (ej. "4.002 GAL"). Si no se ve, "".
@@ -132,8 +132,10 @@ async def subir_ticket_grifo(
             texto_ia = ""
             try:
                 print("🤖 IA leyendo el ticket con gemini-3.5-flash-lite...")
-                chat = cliente_ia.chats.create(model="gemini-3.5-flash-lite")
-                respuesta = chat.send_message(message=[prompt, archivo_ia])
+                respuesta = cliente_ia.models.generate_content(
+                    model="gemini-3.5-flash-lite",
+                    contents=[prompt, archivo_ia],
+                )
                 texto_ia = (respuesta.text or "").strip()
             except Exception as e:
                 error_ia = str(e)
@@ -203,7 +205,9 @@ async def subir_ticket_grifo(
             if not encontrado and texto_ia and ruc_empresa_n in texto_ia:
                 encontrado = True
             if not encontrado:
-                return {"status": "warning", "mensaje": f"Factura no registrada: no se encontró el RUC de la empresa ({ruc_empresa}) en el ticket."}
+                diag = f"ruc_cliente='{ruc_cliente}', ruc_emisor='{ruc_ia}', ocr_ok={ocr_ok}"
+                print(f"[RUC FILTRO] Rechazada: {diag} | texto_ia={texto_ia[:300]}")
+                return {"status": "warning", "mensaje": f"Factura no registrada: no se encontró el RUC de la empresa ({ruc_empresa}) en el ticket. {diag}"}
 
         # Proveedores automáticos
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
