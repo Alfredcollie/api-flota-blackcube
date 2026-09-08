@@ -133,12 +133,7 @@ async def subir_ticket_grifo(
             try:
                 print("🤖 IA leyendo el ticket con gemini-3.5-flash-lite...")
                 chat = cliente_ia.chats.create(model="gemini-3.5-flash-lite")
-                respuesta = chat.send_message(
-                    message=types.Content(
-                        role="user",
-                        parts=[types.Part.from_text(text=prompt), archivo_ia],
-                    )
-                )
+                respuesta = chat.send_message(message=[prompt, archivo_ia])
                 texto_ia = (respuesta.text or "").strip()
             except Exception as e:
                 error_ia = str(e)
