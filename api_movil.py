@@ -63,6 +63,21 @@ async def subir_ticket_grifo(
     if not conn:
         raise HTTPException(status_code=500, detail="Error conectando a la base de datos.")
 
+    # RUC de la empresa desde Configuración General (nube), leído ANTES del OCR
+    # para filtrar las facturas del App Grifo por el RUC del adquirente.
+    ruc_empresa = ""
+    try:
+        cursor_pre = conn.cursor()
+        cursor_pre.execute("CREATE TABLE IF NOT EXISTS configuracion_sistema (clave VARCHAR(255) PRIMARY KEY, valor TEXT)")
+        cursor_pre.execute("SELECT valor FROM configuracion_sistema WHERE clave = 'ruc_empresa'")
+        fila_pre = cursor_pre.fetchone()
+        if fila_pre:
+            ruc_empresa = (fila_pre[0] or "").strip()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        ruc_empresa = ""
+
     try:
         # 1. LEER LA FOTO Y CONVERTIRLA A TEXTO (Base64) PARA LA NUBE
         foto_bytes = await foto.read()
@@ -110,6 +125,8 @@ async def subir_ticket_grifo(
             - "total": importe total / gran total (ej. 100.00). Si no se ve, 0.
             Reglas: NO inventes datos. Montos como números con punto decimal, sin símbolo de moneda ni comas. Si un campo no se ve, devuélvelo vacío o 0.
             """
+            if ruc_empresa:
+                prompt += f"\nIMPORTANTE: La empresa cliente tiene el RUC {ruc_empresa}. Si ves ese RUC (o un RUC de 11 dígitos que NO es del grifo emisor) en el ticket, colócalo en el campo 'ruc_cliente'."
             
             # Llamada única y ligera: un solo modelo, un solo intento, sin esperas.
             texto_ia = ""
@@ -177,23 +194,18 @@ async def subir_ticket_grifo(
             cuenta_grifo = ""
         conn.commit()
 
-        # Validación: la factura debe contener el RUC de la empresa (Configuración General).
-        ruc_empresa = ""
-        try:
-            cursor.execute("SELECT valor FROM configuracion_sistema WHERE clave = 'ruc_empresa'")
-            fila_ruc = cursor.fetchone()
-            if fila_ruc:
-                ruc_empresa = (fila_ruc[0] or "").strip()
-        except Exception:
-            conn.rollback()
-            ruc_empresa = ""
-
+        # Validación: la factura debe estar emitida a la empresa (RUC del adquirente).
         if ruc_empresa:
             ruc_empresa_n = "".join(ch for ch in ruc_empresa if ch.isdigit())
-            ruc_cliente_n = "".join(ch for ch in (ruc_cliente or "") if ch.isdigit())
-            if ruc_empresa_n and ruc_cliente_n != ruc_empresa_n:
-                ruc_mostrado = ruc_cliente if ruc_cliente else "no leído"
-                return {"status": "warning", "mensaje": f"Factura no registrada: el RUC del comprador ({ruc_mostrado}) no coincide con el RUC de la empresa ({ruc_empresa})."}
+            encontrado = False
+            if ruc_cliente and "".join(ch for ch in ruc_cliente if ch.isdigit()) == ruc_empresa_n:
+                encontrado = True
+            if not encontrado and ruc_ia and "".join(ch for ch in ruc_ia if ch.isdigit()) == ruc_empresa_n:
+                encontrado = True
+            if not encontrado and texto_ia and ruc_empresa_n in texto_ia:
+                encontrado = True
+            if not encontrado:
+                return {"status": "warning", "mensaje": f"Factura no registrada: no se encontró el RUC de la empresa ({ruc_empresa}) en el ticket."}
 
         # Proveedores automáticos
         if ruc_ia and ruc_ia.isdigit() and len(ruc_ia) == 11:
