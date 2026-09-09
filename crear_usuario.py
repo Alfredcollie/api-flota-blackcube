@@ -25,11 +25,17 @@ from auth import hash_password
 
 def _crear_tabla(cursor):
     cursor.execute(
-        "CREATE TABLE IF NOT EXISTS usuarios ("
+        "CREATE TABLE IF NOT EXISTS app_usuarios ("
         " username VARCHAR(150) PRIMARY KEY,"
         " password_hash TEXT NOT NULL,"
         " nombre VARCHAR(200),"
         " activo BOOLEAN DEFAULT TRUE,"
+        " creado_en TIMESTAMPTZ DEFAULT now())"
+    )
+    cursor.execute(
+        "CREATE TABLE IF NOT EXISTS app_tokens_acceso ("
+        " token TEXT PRIMARY KEY,"
+        " username VARCHAR(150) NOT NULL,"
         " creado_en TIMESTAMPTZ DEFAULT now())"
     )
 
@@ -57,20 +63,20 @@ def main():
         _crear_tabla(cursor)
         conn.commit()
 
-        cursor.execute("SELECT username FROM usuarios WHERE username = %s", (username,))
+        cursor.execute("SELECT username FROM app_usuarios WHERE username = %s", (username,))
         existe = cursor.fetchone()
         activo = not inactivo
 
         if existe:
             cursor.execute(
-                "UPDATE usuarios SET password_hash = %s, nombre = %s, activo = %s "
+                "UPDATE app_usuarios SET password_hash = %s, nombre = %s, activo = %s "
                 "WHERE username = %s",
                 (hash_password(clave), nombre, activo, username),
             )
             print("✅ Usuario '%s' ACTUALIZADO (acceso %s)." % (username, "ACTIVADO" if activo else "DESACTIVADO"))
         else:
             cursor.execute(
-                "INSERT INTO usuarios (username, password_hash, nombre, activo) "
+                "INSERT INTO app_usuarios (username, password_hash, nombre, activo) "
                 "VALUES (%s, %s, %s, %s)",
                 (username, hash_password(clave), nombre, activo),
             )

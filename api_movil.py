@@ -65,12 +65,12 @@ def _obtener_usuario_sesion(authorization: str = Header(default="")):
         raise HTTPException(status_code=500, detail="Error conectando a la base de datos.")
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT username FROM tokens_acceso WHERE token = %s", (token,))
+        cursor.execute("SELECT username FROM app_tokens_acceso WHERE token = %s", (token,))
         fila = cursor.fetchone()
         if not fila:
             raise HTTPException(status_code=401, detail="Token invalido o expirado.")
         username = fila[0]
-        cursor.execute("SELECT activo FROM usuarios WHERE username = %s", (username,))
+        cursor.execute("SELECT activo FROM app_usuarios WHERE username = %s", (username,))
         u = cursor.fetchone()
         if not u:
             raise HTTPException(status_code=401, detail="Usuario no existe.")
@@ -96,7 +96,7 @@ async def login(request: Request):
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "CREATE TABLE IF NOT EXISTS usuarios ("
+            "CREATE TABLE IF NOT EXISTS app_usuarios ("
             " username VARCHAR(150) PRIMARY KEY,"
             " password_hash TEXT NOT NULL,"
             " nombre VARCHAR(200),"
@@ -104,7 +104,7 @@ async def login(request: Request):
             " creado_en TIMESTAMPTZ DEFAULT now())"
         )
         cursor.execute(
-            "CREATE TABLE IF NOT EXISTS tokens_acceso ("
+            "CREATE TABLE IF NOT EXISTS app_tokens_acceso ("
             " token TEXT PRIMARY KEY,"
             " username VARCHAR(150) NOT NULL,"
             " creado_en TIMESTAMPTZ DEFAULT now())"
@@ -112,7 +112,7 @@ async def login(request: Request):
         conn.commit()
 
         cursor.execute(
-            "SELECT password_hash, nombre, activo FROM usuarios WHERE username = %s",
+            "SELECT password_hash, nombre, activo FROM app_usuarios WHERE username = %s",
             (username,),
         )
         fila = cursor.fetchone()
@@ -126,7 +126,7 @@ async def login(request: Request):
 
         token = generar_token()
         cursor.execute(
-            "INSERT INTO tokens_acceso (token, username) VALUES (%s, %s)",
+            "INSERT INTO app_tokens_acceso (token, username) VALUES (%s, %s)",
             (token, username),
         )
         conn.commit()
@@ -143,7 +143,7 @@ async def me(username: str = Depends(_obtener_usuario_sesion)):
         raise HTTPException(status_code=500, detail="Error conectando a la base de datos.")
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT nombre FROM usuarios WHERE username = %s", (username,))
+        cursor.execute("SELECT nombre FROM app_usuarios WHERE username = %s", (username,))
         fila = cursor.fetchone()
         return {"username": username, "nombre": (fila[0] if fila else username) or username}
     finally:
