@@ -150,6 +150,24 @@ async def me(username: str = Depends(_obtener_usuario_sesion)):
         liberar_conexion(conn)
 
 
+@app.get("/vehiculos/")
+async def listar_vehiculos(username: str = Depends(_obtener_usuario_sesion)):
+    """Lista las placas de flota_vehiculos para el desplegable de la app."""
+    conn = conectar_db()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Error conectando a la base de datos.")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT placa, kilometraje FROM flota_vehiculos ORDER BY placa")
+        filas = cursor.fetchall()
+        return {"vehiculos": [{"placa": fila[0], "kilometraje": fila[1] or ""} for fila in filas]}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        liberar_conexion(conn)
+
+
 @app.post("/subir-ticket/")
 async def subir_ticket_grifo(
     placa: str = Form(...),
