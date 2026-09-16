@@ -5,6 +5,7 @@ import os
 import json
 import re
 from datetime import datetime
+from pydantic import BaseModel
 from google import genai
 from google.genai import types
 from conexion import conectar_db, liberar_conexion
@@ -127,12 +128,18 @@ def _obtener_usuario_sesion(authorization: str = Header(default="")):
     return _validar_token(authorization)
 
 
+class LoginDatos(BaseModel):
+    """Cuerpo del login. Al declararlo, /docs muestra los campos y un POST vacío
+    devuelve 422 (antes reventaba con 500 al no poder leer el JSON)."""
+    username: str = ""
+    password: str = ""
+
+
 @app.post("/login/")
-async def login(request: Request):
+async def login(datos: LoginDatos):
     """Valida usuario y clave, y devuelve un token de acceso."""
-    datos = await request.json()
-    username = (datos.get("username") or "").strip()
-    password = datos.get("password") or ""
+    username = (datos.username or "").strip()
+    password = datos.password or ""
     if not username or not password:
         raise HTTPException(status_code=400, detail="Faltan credenciales.")
 
@@ -460,17 +467,16 @@ async def registrar_inspeccion(request: Request, username: str = Depends(_obtene
 
 
 @app.get("/diagnostico-ia/")
-async def diagnostico_ia(token: str = "", authorization: str = Header(default="")):
-    """Diagnóstico del OCR. Ábrelo en el navegador para ver la causa exacta:
+async def diagnostico_ia():
+    """Diagnóstico del OCR de la IA (sin datos sensibles: no muestra la clave).
 
-        https://TU-API/diagnostico-ia/?token=TU_TOKEN
+    Ábrelo directamente en el navegador, sin token:
+
+        https://api-flota-blackcube.onrender.com/diagnostico-ia/
 
     Devuelve si la clave está configurada en el servidor, qué modelos acepta esa clave
     y el error literal que responde Google al intentar generar texto."""
-    usuario = _validar_token(authorization or token)
-
     info = {
-        "usuario": usuario,
         "clave_configurada": bool(GEMINI_API_KEY),
         "longitud_clave": len(GEMINI_API_KEY),
         "modelo_preferido": GEMINI_MODELO,
