@@ -12,15 +12,50 @@ from auth import verify_password, generar_token
 
 # --- CONFIGURACIÓN DE LA IA (GOOGLE GEMINI) PARA OCR DE TICKETS ---
 # La clave NUNCA se escribe en el código: se lee de la variable de entorno GEMINI_API_KEY.
-#   - GitHub: Settings > Secrets and variables > Actions > New repository secret (GEMINI_API_KEY)
-#             y en el workflow se pasa como env: GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-#   - Render / servidor: Environment > GEMINI_API_KEY
-#   - Local: variable de entorno del sistema (o archivo .env, que está en .gitignore)
+#   IMPORTANTE: el código se ejecuta en RENDER, no en GitHub Actions. Por eso la variable
+#   debe estar en Render > (servicio) > Environment > GEMINI_API_KEY.
+#   Un "GitHub Secret" (Settings > Secrets and variables > Actions) solo alimenta workflows
+#   de GitHub; NO llega al servidor de Render.
 # Clave GRATIS de Google AI Studio: https://aistudio.google.com/apikey
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+
+# Modelo de OCR. Si Google retira/renombra un modelo, cambia GEMINI_MODELO en Render o
+# deja que el respaldo automático pruebe los siguientes de la lista.
+GEMINI_MODELO = os.environ.get("GEMINI_MODELO", "gemini-flash-latest").strip()
+GEMINI_MODELOS_RESPALDO = [
+    m.strip() for m in os.environ.get(
+        "GEMINI_MODELOS_RESPALDO",
+        "gemini-flash-latest,gemini-2.5-flash-lite,gemini-2.5-flash,gemini-2.0-flash-lite",
+    ).split(",") if m.strip()
+]
+
 if not GEMINI_API_KEY:
-    print("⚠️ GEMINI_API_KEY no configurada: el OCR con IA quedara desactivado hasta definir la variable de entorno.")
+    print("[AVISO] GEMINI_API_KEY no configurada: el OCR con IA quedara desactivado hasta definir la variable de entorno.")
 cliente_ia = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+
+def _modelos_a_probar():
+    """Modelos a intentar, en orden: el preferido, los de respaldo y, como última red,
+    los modelos 'flash' que la propia clave tenga disponibles (auto-ajuste si Google
+    renombra o retira modelos)."""
+    orden, vistos = [], set()
+    for m in [GEMINI_MODELO] + GEMINI_MODELOS_RESPALDO:
+        if m and m not in vistos:
+            vistos.add(m)
+            orden.append(m)
+    try:
+        agregados = 0
+        for m in cliente_ia.models.list():
+            nombre = (getattr(m, "name", "") or "").replace("models/", "").strip()
+            if nombre and "flash" in nombre and nombre not in vistos:
+                vistos.add(nombre)
+                orden.append(nombre)
+                agregados += 1
+                if agregados >= 3:
+                    break
+    except Exception as e:
+        print(f"⚠️ No se pudo listar modelos disponibles: {e}")
+    return orden
 # ---------------------------------------------------
 
 
@@ -61,9 +96,9 @@ def _preprocesar_imagen(foto_bytes):
 app = FastAPI(title="API - Flota Automotriz Black Cube")
 
 
-def _obtener_usuario_sesion(authorization: str = Header(default="")):
-    """Valida el token de acceso (header Authorization: Token <clave>)."""
-    token = authorization.replace("Token ", "").replace("Bearer ", "").strip()
+def _validar_token(token: str):
+    """Comprueba un token de acceso contra la base de datos y devuelve el usuario."""
+    token = (token or "").replace("Token ", "").replace("Bearer ", "").strip()
     if not token:
         raise HTTPException(status_code=401, detail="No autorizado: falta token.")
     conn = conectar_db()
@@ -85,6 +120,11 @@ def _obtener_usuario_sesion(authorization: str = Header(default="")):
         return username
     finally:
         liberar_conexion(conn)
+
+
+def _obtener_usuario_sesion(authorization: str = Header(default="")):
+    """Valida el token de acceso (header Authorization: Token <clave>)."""
+    return _validar_token(authorization)
 
 
 @app.post("/login/")
@@ -230,20 +270,28 @@ async def subir_ticket_grifo(
             Reglas: NO inventes datos. Montos como números con punto decimal, sin símbolo de moneda ni comas. Si un campo no se ve, devuélvelo vacío o 0.
             """
             
-            # Llamada única y ligera: un solo modelo, un solo intento, sin esperas.
+            # Prueba los modelos en orden hasta que uno responda. Si Google retira o
+            # renombra un modelo, el respaldo automático lo resuelve sin tocar el código.
             texto_ia = ""
-            try:
-                print("🤖 IA leyendo el ticket con gemini-3.5-flash-lite...")
-                respuesta = cliente_ia.models.generate_content(
-                    model="gemini-3.5-flash-lite",
-                    contents=[prompt, archivo_ia],
-                )
-                texto_ia = (respuesta.text or "").strip()
-            except Exception as e:
-                error_ia = str(e)
-                print(f"⚠️ Error IA: {e}")
+            errores_ia = []
+            for modelo in _modelos_a_probar():
+                try:
+                    print(f"🤖 IA leyendo el ticket con {modelo}...")
+                    respuesta = cliente_ia.models.generate_content(
+                        model=modelo,
+                        contents=[prompt, archivo_ia],
+                    )
+                    texto_ia = (respuesta.text or "").strip()
+                    if texto_ia:
+                        print(f"✅ OCR correcto con {modelo}")
+                        break
+                    errores_ia.append(f"{modelo}: respuesta vacía")
+                except Exception as e:
+                    errores_ia.append(f"{modelo}: {e}")
+                    print(f"⚠️ Error IA con {modelo}: {e}")
             if not texto_ia:
-                raise ValueError(f"La IA no devolvió texto. Error: {error_ia[:300]}")
+                error_ia = " | ".join(errores_ia)[:400]
+                raise ValueError(f"Ningún modelo respondió. {error_ia}")
             
             match = re.search(r'\{.*\}', texto_ia, re.DOTALL)
             
@@ -409,6 +457,54 @@ async def registrar_inspeccion(request: Request, username: str = Depends(_obtene
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         liberar_conexion(conn)
+
+
+@app.get("/diagnostico-ia/")
+async def diagnostico_ia(token: str = "", authorization: str = Header(default="")):
+    """Diagnóstico del OCR. Ábrelo en el navegador para ver la causa exacta:
+
+        https://TU-API/diagnostico-ia/?token=TU_TOKEN
+
+    Devuelve si la clave está configurada en el servidor, qué modelos acepta esa clave
+    y el error literal que responde Google al intentar generar texto."""
+    usuario = _validar_token(authorization or token)
+
+    info = {
+        "usuario": usuario,
+        "clave_configurada": bool(GEMINI_API_KEY),
+        "longitud_clave": len(GEMINI_API_KEY),
+        "modelo_preferido": GEMINI_MODELO,
+        "modelos_a_probar": _modelos_a_probar(),
+    }
+
+    if not GEMINI_API_KEY:
+        info["resultado"] = (
+            "FALTA la variable GEMINI_API_KEY en el servidor. En Render: tu servicio > "
+            "Environment > Add Environment Variable > GEMINI_API_KEY. Un GitHub Secret "
+            "NO llega a Render; guarda y espera el redeploy."
+        )
+        return info
+
+    pruebas = {}
+    for modelo in info["modelos_a_probar"]:
+        try:
+            r = cliente_ia.models.generate_content(model=modelo, contents=["Responde solo: OK"])
+            pruebas[modelo] = "OK -> " + (r.text or "").strip()[:40]
+        except Exception as e:
+            pruebas[modelo] = "ERROR -> " + str(e)[:300]
+    info["pruebas"] = pruebas
+
+    ok = [m for m, v in pruebas.items() if v.startswith("OK")]
+    if ok:
+        info["resultado"] = f"IA operativa. Usa preferentemente: {ok[0]}"
+    else:
+        info["resultado"] = (
+            "Ningún modelo respondió. Revisa 'pruebas': si todas dicen 401/403 la clave "
+            "pertenece a un proyecto de Google Cloud deshabilitado o con la cuenta de "
+            "servicio borrada -> crea una clave nueva en https://aistudio.google.com/apikey "
+            "y actualízala en Render."
+        )
+    return info
 
 
 if __name__ == "__main__":
