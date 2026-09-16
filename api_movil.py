@@ -11,9 +11,15 @@ from conexion import conectar_db, liberar_conexion
 from auth import verify_password, generar_token
 
 # --- CONFIGURACIÓN DE LA IA (GOOGLE GEMINI) PARA OCR DE TICKETS ---
-# Clave GRATIS de Google AI Studio -> variable de entorno GEMINI_API_KEY en Render.
-# https://aistudio.google.com/apikey
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip() or "AQ.Ab8RN6LTyHmVNUALwk6Wk7b2EMSzbZrVXVjg-cKUH7cSwnJ0Iw"
+# La clave NUNCA se escribe en el código: se lee de la variable de entorno GEMINI_API_KEY.
+#   - GitHub: Settings > Secrets and variables > Actions > New repository secret (GEMINI_API_KEY)
+#             y en el workflow se pasa como env: GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+#   - Render / servidor: Environment > GEMINI_API_KEY
+#   - Local: variable de entorno del sistema (o archivo .env, que está en .gitignore)
+# Clave GRATIS de Google AI Studio: https://aistudio.google.com/apikey
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+if not GEMINI_API_KEY:
+    print("⚠️ GEMINI_API_KEY no configurada: el OCR con IA quedara desactivado hasta definir la variable de entorno.")
 cliente_ia = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # ---------------------------------------------------
 
