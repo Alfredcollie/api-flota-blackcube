@@ -26,7 +26,7 @@ GEMINI_MODELO = os.environ.get("GEMINI_MODELO", "gemini-flash-latest").strip()
 GEMINI_MODELOS_RESPALDO = [
     m.strip() for m in os.environ.get(
         "GEMINI_MODELOS_RESPALDO",
-        "gemini-flash-latest,gemini-2.5-flash-lite,gemini-2.5-flash,gemini-2.0-flash-lite",
+        "gemini-flash-latest,gemini-3.6-flash,gemini-3.5-flash-lite,gemini-2.5-flash",
     ).split(",") if m.strip()
 ]
 
@@ -44,11 +44,14 @@ def _modelos_a_probar():
         if m and m not in vistos:
             vistos.add(m)
             orden.append(m)
+    # Modelos que no sirven para OCR (texto a voz, imagen, audio, embeddings...)
+    excluir = ("tts", "image", "audio", "embedding", "embed", "aqa", "live")
     try:
         agregados = 0
         for m in cliente_ia.models.list():
             nombre = (getattr(m, "name", "") or "").replace("models/", "").strip()
-            if nombre and "flash" in nombre and nombre not in vistos:
+            if (nombre and "flash" in nombre and nombre not in vistos
+                    and not any(x in nombre for x in excluir)):
                 vistos.add(nombre)
                 orden.append(nombre)
                 agregados += 1
