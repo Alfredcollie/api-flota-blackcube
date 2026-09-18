@@ -4,6 +4,7 @@ import base64
 import os
 import json
 import re
+import time
 from datetime import datetime
 from pydantic import BaseModel
 from google import genai
@@ -32,33 +33,72 @@ GEMINI_MODELOS_RESPALDO = [
 
 if not GEMINI_API_KEY:
     print("[AVISO] GEMINI_API_KEY no configurada: el OCR con IA quedara desactivado hasta definir la variable de entorno.")
-cliente_ia = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+# Timeout y reintentos ACOTADOS: por defecto el SDK reintenta con esperas largas y, si un
+# modelo falla, puede tardar más de un minuto (eso hacía parecer que el ticket se colgaba).
+if GEMINI_API_KEY:
+    try:
+        cliente_ia = genai.Client(
+            api_key=GEMINI_API_KEY,
+            http_options=types.HttpOptions(
+                timeout=45000,
+                retry_options=types.HttpRetryOptions(attempts=2),
+            ),
+        )
+    except Exception as e:
+        print(f"[AVISO] No se pudieron aplicar las opciones HTTP ({e}); se usan las de por defecto.")
+        cliente_ia = genai.Client(api_key=GEMINI_API_KEY)
+else:
+    cliente_ia = None
+
+# Modelos 'flash' que la clave tenga disponibles. Se consulta UNA sola vez por proceso y
+# solo si los modelos configurados fallan (antes se consultaba en CADA ticket, y eso
+# añadía una ida y vuelta a Google antes de empezar el OCR).
+_modelos_descubiertos_cache = None
 
 
-def _modelos_a_probar():
-    """Modelos a intentar, en orden: el preferido, los de respaldo y, como última red,
-    los modelos 'flash' que la propia clave tenga disponibles (auto-ajuste si Google
-    renombra o retira modelos)."""
+def _modelos_configurados():
+    """Modelos configurados, en orden y sin repetidos (no llama a Google)."""
     orden, vistos = [], set()
     for m in [GEMINI_MODELO] + GEMINI_MODELOS_RESPALDO:
         if m and m not in vistos:
             vistos.add(m)
             orden.append(m)
+    return orden
+
+
+def _modelos_descubiertos():
+    """Modelos que la clave tiene disponibles (una consulta por proceso, cacheada)."""
+    global _modelos_descubiertos_cache
+    if _modelos_descubiertos_cache is not None:
+        return _modelos_descubiertos_cache
+    if cliente_ia is None:
+        return []
     # Modelos que no sirven para OCR (texto a voz, imagen, audio, embeddings...)
     excluir = ("tts", "image", "audio", "embedding", "embed", "aqa", "live")
     try:
-        agregados = 0
+        nombres = []
         for m in cliente_ia.models.list():
             nombre = (getattr(m, "name", "") or "").replace("models/", "").strip()
-            if (nombre and "flash" in nombre and nombre not in vistos
+            if (nombre and "flash" in nombre
                     and not any(x in nombre for x in excluir)):
-                vistos.add(nombre)
-                orden.append(nombre)
-                agregados += 1
-                if agregados >= 3:
-                    break
+                nombres.append(nombre)
+            if len(nombres) >= 6:
+                break
+        if nombres:
+            _modelos_descubiertos_cache = nombres
+        return nombres
     except Exception as e:
-        print(f"⚠️ No se pudo listar modelos disponibles: {e}")
+        print(f"[AVISO] No se pudo listar modelos disponibles: {e}")
+        return []
+
+
+def _modelos_a_probar():
+    """Lista completa (configurados + descubiertos) para el diagnóstico."""
+    orden = _modelos_configurados()
+    for m in _modelos_descubiertos():
+        if m not in orden:
+            orden.append(m)
     return orden
 # ---------------------------------------------------
 
@@ -138,6 +178,68 @@ class LoginDatos(BaseModel):
     password: str = ""
 
 
+# El esquema se asegura UNA sola vez por proceso. Antes, los CREATE/ALTER TABLE se
+# ejecutaban en CADA petición (Supabase cobra una ida y vuelta y bloqueos por cada uno),
+# y eso se notaba en el login y sobre todo en cada ticket.
+_esquema_listo = False
+
+
+def _asegurar_esquema(cursor, conn):
+    """Crea/actualiza las tablas necesarias (una vez por proceso)."""
+    global _esquema_listo
+    if _esquema_listo:
+        return
+    sentencias = [
+        "CREATE TABLE IF NOT EXISTS app_usuarios ("
+        " username VARCHAR(150) PRIMARY KEY,"
+        " password_hash TEXT NOT NULL,"
+        " nombre VARCHAR(200),"
+        " activo BOOLEAN DEFAULT TRUE,"
+        " creado_en TIMESTAMPTZ DEFAULT now())",
+        "CREATE TABLE IF NOT EXISTS app_tokens_acceso ("
+        " token TEXT PRIMARY KEY,"
+        " username VARCHAR(150) NOT NULL,"
+        " creado_en TIMESTAMPTZ DEFAULT now())",
+        "CREATE TABLE IF NOT EXISTS config_general (clave VARCHAR(255) PRIMARY KEY, valor TEXT)",
+        "ALTER TABLE pagos_comprobantes ADD COLUMN IF NOT EXISTS cuenta_origen VARCHAR(255) DEFAULT ''",
+        "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS kilometraje TEXT",
+        "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS cantidad_combustible TEXT",
+        "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS ruc TEXT",
+        "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS hora TEXT",
+        "ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS imagen_base64 TEXT",
+        "CREATE TABLE IF NOT EXISTS inspecciones ("
+        " id SERIAL PRIMARY KEY,"
+        " placa TEXT,"
+        " chofer TEXT,"
+        " inspector TEXT,"
+        " fecha_hora TEXT,"
+        " payload TEXT,"
+        " creado_en TIMESTAMPTZ DEFAULT now())",
+    ]
+    fallos = []
+    for sql in sentencias:
+        try:
+            cursor.execute(sql)
+        except Exception as e:
+            fallos.append(f"{sql[:45]}... -> {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    try:
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    if fallos:
+        print("[AVISO] No se pudieron aplicar todas las sentencias de esquema: " + " | ".join(fallos)[:400])
+    else:
+        _esquema_listo = True
+        print("[OK] Esquema verificado (no se volverá a comprobar en cada petición).")
+
+
 @app.post("/login/")
 async def login(datos: LoginDatos):
     """Valida usuario y clave, y devuelve un token de acceso."""
@@ -151,21 +253,7 @@ async def login(datos: LoginDatos):
         raise HTTPException(status_code=500, detail="Error conectando a la base de datos.")
     try:
         cursor = conn.cursor()
-        cursor.execute(
-            "CREATE TABLE IF NOT EXISTS app_usuarios ("
-            " username VARCHAR(150) PRIMARY KEY,"
-            " password_hash TEXT NOT NULL,"
-            " nombre VARCHAR(200),"
-            " activo BOOLEAN DEFAULT TRUE,"
-            " creado_en TIMESTAMPTZ DEFAULT now())"
-        )
-        cursor.execute(
-            "CREATE TABLE IF NOT EXISTS app_tokens_acceso ("
-            " token TEXT PRIMARY KEY,"
-            " username VARCHAR(150) NOT NULL,"
-            " creado_en TIMESTAMPTZ DEFAULT now())"
-        )
-        conn.commit()
+        _asegurar_esquema(cursor, conn)
 
         cursor.execute(
             "SELECT password_hash, nombre, activo FROM app_usuarios WHERE username = %s",
@@ -280,25 +368,44 @@ async def subir_ticket_grifo(
             Reglas: NO inventes datos. Montos como números con punto decimal, sin símbolo de moneda ni comas. Si un campo no se ve, devuélvelo vacío o 0.
             """
             
-            # Prueba los modelos en orden hasta que uno responda. Si Google retira o
-            # renombra un modelo, el respaldo automático lo resuelve sin tocar el código.
+            # Prueba los modelos en orden hasta que uno responda. El caso normal se
+            # resuelve con el PRIMER modelo (sin consultas extra a Google).
             texto_ia = ""
             errores_ia = []
-            for modelo in _modelos_a_probar():
+
+            def _intentar_ocr(modelo):
+                """Devuelve (texto, error) para un modelo concreto."""
                 try:
                     print(f"🤖 IA leyendo el ticket con {modelo}...")
                     respuesta = cliente_ia.models.generate_content(
                         model=modelo,
                         contents=[prompt, archivo_ia],
                     )
-                    texto_ia = (respuesta.text or "").strip()
+                    texto = (respuesta.text or "").strip()
+                    return texto, ("" if texto else "respuesta vacía")
+                except Exception as e:
+                    return "", str(e)
+
+            for modelo in _modelos_configurados():
+                texto_ia, err = _intentar_ocr(modelo)
+                if texto_ia:
+                    print(f"✅ OCR correcto con {modelo}")
+                    break
+                errores_ia.append(f"{modelo}: {err}")
+                print(f"⚠️ Error IA con {modelo}: {err}")
+
+            # Solo si TODOS los configurados fallaron, probamos los que la clave tenga
+            # disponibles (una única consulta, cacheada).
+            if not texto_ia:
+                for modelo in _modelos_descubiertos():
+                    if modelo in _modelos_configurados():
+                        continue
+                    texto_ia, err = _intentar_ocr(modelo)
                     if texto_ia:
                         print(f"✅ OCR correcto con {modelo}")
                         break
-                    errores_ia.append(f"{modelo}: respuesta vacía")
-                except Exception as e:
-                    errores_ia.append(f"{modelo}: {e}")
-                    print(f"⚠️ Error IA con {modelo}: {e}")
+                    errores_ia.append(f"{modelo}: {err}")
+
             if not texto_ia:
                 error_ia = " | ".join(errores_ia)[:400]
                 raise ValueError(f"Ningún modelo respondió. {error_ia}")
@@ -340,10 +447,9 @@ async def subir_ticket_grifo(
         cursor = conn.cursor()
 
         # Cuenta bancaria asignada para pagos del App Grifo (Configuración General).
+        _asegurar_esquema(cursor, conn)
         cuenta_grifo = ""
         try:
-            cursor.execute("CREATE TABLE IF NOT EXISTS config_general (clave VARCHAR(255) PRIMARY KEY, valor TEXT)")
-            cursor.execute("ALTER TABLE pagos_comprobantes ADD COLUMN IF NOT EXISTS cuenta_origen VARCHAR(255) DEFAULT ''")
             cursor.execute("SELECT valor FROM config_general WHERE clave = 'cuenta_grifo_pagos'")
             fila_cfg = cursor.fetchone()
             if fila_cfg:
@@ -374,14 +480,7 @@ async def subir_ticket_grifo(
 
         cursor.execute("UPDATE flota_vehiculos SET kilometraje = %s WHERE placa = %s", (kilometraje, placa))
 
-        # Crear columnas dinámicas (incluido el almacén temporal de la foto "imagen_base64").
-        # "ADD COLUMN IF NOT EXISTS" evita errores y rollbacks en cada envío (más rápido).
-        for col in ["kilometraje", "cantidad_combustible", "ruc", "hora", "imagen_base64"]:
-            try:
-                cursor.execute(f"ALTER TABLE facturas_recibidas ADD COLUMN IF NOT EXISTS {col} TEXT;")
-            except Exception:
-                conn.rollback()
-        conn.commit()
+        # Las columnas dinámicas ya quedaron aseguradas una sola vez en _asegurar_esquema().
 
         # El detalle va en la columna "descripcion": tipo de combustible + hora
         if hora_ticket:
@@ -436,19 +535,8 @@ async def registrar_inspeccion(request: Request, username: str = Depends(_obtene
 
     try:
         cursor = conn.cursor()
-        # Asegura la existencia de la tabla (también puedes ejecutar inspeccion_vehicular.sql).
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS inspecciones (
-                id SERIAL PRIMARY KEY,
-                placa TEXT,
-                chofer TEXT,
-                inspector TEXT,
-                fecha_hora TEXT,
-                payload TEXT,
-                creado_en TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        conn.commit()
+        # La tabla se asegura una sola vez por proceso (ver _asegurar_esquema).
+        _asegurar_esquema(cursor, conn)
 
         cursor.execute("""
             INSERT INTO inspecciones (placa, chofer, inspector, fecha_hora, payload)
@@ -470,20 +558,21 @@ async def registrar_inspeccion(request: Request, username: str = Depends(_obtene
 
 
 @app.get("/diagnostico-ia/")
-async def diagnostico_ia():
+async def diagnostico_ia(completo: int = 0):
     """Diagnóstico del OCR de la IA (sin datos sensibles: no muestra la clave).
 
     Ábrelo directamente en el navegador, sin token:
 
         https://api-flota-blackcube.onrender.com/diagnostico-ia/
 
-    Devuelve si la clave está configurada en el servidor, qué modelos acepta esa clave
-    y el error literal que responde Google al intentar generar texto."""
+    Por defecto prueba SOLO el modelo preferido, así responde en pocos segundos.
+    Con ?completo=1 prueba toda la lista (tarda más, porque hace varias llamadas a Google).
+    """
+    inicio = time.time()
     info = {
         "clave_configurada": bool(GEMINI_API_KEY),
         "longitud_clave": len(GEMINI_API_KEY),
         "modelo_preferido": GEMINI_MODELO,
-        "modelos_a_probar": _modelos_a_probar(),
     }
 
     if not GEMINI_API_KEY:
@@ -494,14 +583,31 @@ async def diagnostico_ia():
         )
         return info
 
-    pruebas = {}
-    for modelo in info["modelos_a_probar"]:
+    def _probar(modelo):
+        """Prueba real de generación. Devuelve un texto corto con el resultado."""
+        t0 = time.time()
         try:
             r = cliente_ia.models.generate_content(model=modelo, contents=["Responde solo: OK"])
-            pruebas[modelo] = "OK -> " + (r.text or "").strip()[:40]
+            return f"OK ({time.time() - t0:.1f}s) -> " + (r.text or "").strip()[:40]
         except Exception as e:
-            pruebas[modelo] = "ERROR -> " + str(e)[:300]
+            return f"ERROR ({time.time() - t0:.1f}s) -> " + str(e)[:300]
+
+    configurados = _modelos_configurados()
+    pruebas = {configurados[0]: _probar(configurados[0])}
+
+    # Si el preferido falla, se prueba el resto de la lista configurada.
+    if not any(v.startswith("OK") for v in pruebas.values()):
+        for modelo in configurados[1:]:
+            pruebas[modelo] = _probar(modelo)
+
+    # ?completo=1 añade los modelos que la clave tenga disponibles.
+    if completo:
+        for modelo in _modelos_descubiertos():
+            if modelo not in pruebas:
+                pruebas[modelo] = _probar(modelo)
+
     info["pruebas"] = pruebas
+    info["segundos_totales"] = round(time.time() - inicio, 1)
 
     ok = [m for m, v in pruebas.items() if v.startswith("OK")]
     if ok:
