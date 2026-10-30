@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Depends, Header
 import base64
+import calendar
 import os
 import json
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
@@ -307,6 +308,393 @@ async def listar_vehiculos(username: str = Depends(_obtener_usuario_sesion)):
         return {"vehiculos": [{"placa": fila[0], "kilometraje": fila[1] or ""} for fila in filas]}
     except Exception as e:
         conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        liberar_conexion(conn)
+
+
+# =====================================================================
+# NOTIFICACIONES DE FLOTA (SOLO LECTURA)
+# ---------------------------------------------------------------------
+# La app "Notificaciones de Flota" únicamente VISUALIZA: nunca registra ni
+# modifica nada. Este endpoint reproduce el "Panel de Notificaciones y
+# Alertas" de ControlFlota (control_general.py -> panel_dashboard) pero
+# LIMITADO al programa de flota: VEHÍCULOS y CHOFERES.
+# Quedan fuera, a propósito, ventas, cobranza, compras y nómina.
+# =====================================================================
+
+# Umbrales por defecto: los mismos de ControlFlota cuando el equipo todavía
+# no guardó su configuración (config_local.json es local, no vive en Supabase).
+_ALERTAS_DEF = {
+    "dias_alerta_vencimiento": "30",
+    "alerta_aceite_km": "5000",
+    "alerta_aceite_meses": "6",
+    "alerta_mantenimiento_general_km": "10000",
+    "alerta_mantenimiento_general_meses": "6",
+    "alerta_gas_km": "10000",
+    "alerta_neumaticos_km": "50000",
+}
+
+# Columnas del vehículo que alimentan las alertas.
+_COLS_VEHICULO = [
+    "placa", "vencimiento_soat", "vencimiento_seguro", "vencimiento_rt",
+    "fec_rev_gas", "fec_venc_bat", "fec_venc_extintor", "fec_aceite",
+    "km_prox_correa", "kilometraje", "fecha_ultimo_general",
+    "km_ultimo_general", "km_ultimo_aceite", "emision_mant_gas",
+    "km_mant_gas", "neu_fecha", "neu_km",
+]
+
+# Columnas del chofer que alimentan las alertas.
+_COLS_CHOFER = [
+    "nombres", "vencimiento_licencia", "seguro_salud_venc", "seguro_vida_venc",
+    "fecha_nacimiento", "carnet_sanidad_venc", "vencimiento_licencia2",
+    "fecha_fin_contrato",
+]
+
+
+def _consulta(conn, cursor, sql, params=()):
+    """Ejecuta una consulta y devuelve (columnas, filas).
+
+    Si la consulta falla (por ejemplo, una columna que aún no existe en una
+    base antigua) deja la conexión sana y devuelve (None, None) para que el
+    que llama pueda usar su plan B en lugar de tumbar todo el panel.
+    """
+    try:
+        cursor.execute(sql, params)
+        columnas = [d[0] for d in (cursor.description or [])]
+        return columnas, cursor.fetchall()
+    except Exception as e:
+        print("[AVISO] /notificaciones/: consulta fallida -> %s" % e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None, None
+
+
+def _fecha(valor):
+    """'dd/mm/aaaa' (o ISO) -> date. None si no se puede leer."""
+    txt = str(valor if valor is not None else "").strip()
+    if not txt:
+        return None
+    for formato in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(txt, formato).date()
+        except Exception:
+            continue
+    return None
+
+
+def _sumar_meses(fecha_txt, meses):
+    """Suma MESES de calendario a 'dd/mm/aaaa'. '' si la fecha no sirve."""
+    dt = _fecha(fecha_txt)
+    if dt is None:
+        return ""
+    try:
+        total = (dt.month - 1) + int(meses)
+        anio = dt.year + total // 12
+        mes = total % 12 + 1
+        ultimo_dia = calendar.monthrange(anio, mes)[1]
+        return dt.replace(year=anio, month=mes, day=min(dt.day, ultimo_dia)).strftime("%d/%m/%Y")
+    except Exception:
+        return ""
+
+
+def _numero(valor, decimales_con_comas=False):
+    """'12,345' -> 12345.0 (o None si la celda está vacía / no es número).
+
+    Las columnas de kilometraje usan la coma como separador de miles; los
+    valores de configuración, en cambio, pueden traer coma decimal.
+    """
+    txt = str(valor if valor is not None else "").strip()
+    if not txt:
+        return None
+    txt = txt.replace(",", ".") if decimales_con_comas else txt.replace(",", "")
+    m = re.search(r"-?\d+(\.\d+)?", txt)
+    return float(m.group(0)) if m else None
+
+
+def _alerta(tipo, icono, titulo, mensaje, categoria, referencia, documento,
+            fecha="", dias=None, km=None):
+    """Arma una notificación con el mismo formato que usa ControlFlota."""
+    return {
+        "id": "%s|%s|%s" % (categoria, referencia, documento),
+        "tipo": tipo,              # 'peligro' (vencido) | 'alerta' (por vencer)
+        "icono": icono,
+        "titulo": titulo,
+        "mensaje": mensaje,
+        "categoria": categoria,    # 'vehiculo' | 'chofer'
+        "referencia": referencia,  # placa o nombre del chofer
+        "documento": documento,
+        "fecha": fecha,
+        "dias": dias,              # negativos = vencido; None = por kilometraje
+        "km": km,
+    }
+
+
+def _alertas_por_fecha(notificaciones, referencia, categoria, documento, icono,
+                       fecha_valor, dias_alerta, hoy, sufijo_titulo="",
+                       texto_genero="o"):
+    """Compara una fecha de vencimiento con hoy y agrega la notificación."""
+    dt = _fecha(fecha_valor)
+    if dt is None:
+        return
+    dias_restantes = (dt - hoy).days
+    if dias_restantes < 0:
+        notificaciones.append(_alerta(
+            "peligro", "🚨",
+            "%s Vencid%s (%s)" % (documento, texto_genero, referencia),
+            "Venci%s hace %d días (%s)." % (
+                texto_genero, abs(dias_restantes), dt.strftime("%d/%m/%Y")),
+            categoria, referencia, documento, dt.strftime("%d/%m/%Y"),
+            dias_restantes))
+    elif dias_restantes <= dias_alerta:
+        notificaciones.append(_alerta(
+            "alerta", icono,
+            "%s por Vencer (%s)%s" % (documento, referencia, sufijo_titulo),
+            "Vence%s en %d días (%s)." % (
+                texto_genero, dias_restantes, dt.strftime("%d/%m/%Y")),
+            categoria, referencia, documento, dt.strftime("%d/%m/%Y"),
+            dias_restantes))
+
+
+def _alertas_por_km(notificaciones, referencia, documento, icono, km_base,
+                    km_actual, limite, margen_aviso):
+    """Alerta por kilometraje: km_base + límite contra el kilometraje actual."""
+    base = _numero(km_base)
+    actual = _numero(km_actual)
+    if base is None or actual is None or limite <= 0:
+        return
+    restantes = (base + limite) - actual
+    if restantes < 0:
+        notificaciones.append(_alerta(
+            "peligro", "🚨",
+            "%s Vencido (%s)" % (documento, referencia),
+            "Excedido por %s KM (cada %s km)." % (
+                "{:,.0f}".format(abs(restantes)), "{:,.0f}".format(limite)),
+            "vehiculo", referencia, documento, "", None, round(restantes)))
+    elif restantes <= margen_aviso:
+        notificaciones.append(_alerta(
+            "alerta", icono,
+            "%s Próximo (%s)" % (documento, referencia),
+            "Faltan %s KM." % "{:,.0f}".format(restantes),
+            "vehiculo", referencia, documento, "", None, round(restantes)))
+
+
+def _umbrales(conn, cursor):
+    """Umbrales de alerta: config_general (si ya existen) o los de ControlFlota."""
+    cfg = dict(_ALERTAS_DEF)
+    columnas, filas = _consulta(conn, cursor, "SELECT clave, valor FROM config_general")
+    for clave, valor in (filas or []):
+        if clave in cfg and valor is not None and str(valor).strip():
+            cfg[clave] = str(valor).strip()
+    return cfg
+
+
+def _entero(valor, defecto):
+    try:
+        return int(float(str(valor).replace(",", ".")))
+    except Exception:
+        return defecto
+
+
+@app.get("/notificaciones/")
+async def listar_notificaciones(dias: int = 0, username: str = Depends(_obtener_usuario_sesion)):
+    """Notificaciones de la flota: SOLO vehículos y choferes. Solo lectura.
+
+    Con ?dias=N se puede forzar la anticipación del aviso (por defecto se usa
+    la que tenga configurada ControlFlota, o 30 días).
+    """
+    conn = conectar_db()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Error conectando a la base de datos.")
+    try:
+        cursor = conn.cursor()
+        cfg = _umbrales(conn, cursor)
+
+        dias_alerta = dias if dias and dias > 0 else _entero(
+            cfg.get("dias_alerta_vencimiento"), 30)
+        if dias_alerta <= 0:
+            dias_alerta = 30
+
+        hoy = datetime.now().date()
+        notificaciones = []
+        revisados = {"vehiculos": 0, "choferes": 0}
+
+        # ---------------- VEHÍCULOS (solo los operativos) ----------------
+        columnas, filas = _consulta(
+            conn, cursor,
+            "SELECT %s FROM flota_vehiculos WHERE estado = 'Operativo'"
+            % ", ".join(_COLS_VEHICULO))
+        if columnas is None:
+            # Base antigua: al menos los documentos que nunca faltan + kilometraje.
+            columnas, filas = _consulta(
+                conn, cursor,
+                "SELECT placa, vencimiento_soat, vencimiento_seguro, vencimiento_rt"
+                " FROM flota_vehiculos WHERE estado = 'Operativo'")
+        revisados["vehiculos"] = len(filas or [])
+
+        for fila in (filas or []):
+            v = dict(zip(columnas, fila))
+            placa = str(v.get("placa") or "").strip()
+            if not placa:
+                continue
+
+            # Documentos con fecha de vencimiento directa.
+            documentos = {
+                "SOAT": v.get("vencimiento_soat"),
+                "Seguro": v.get("vencimiento_seguro"),
+                "Revisión Técnica": v.get("vencimiento_rt"),
+                "Rev. Sist. Gas": _sumar_meses(v.get("fec_rev_gas"), 12),
+                "Garantía Batería": v.get("fec_venc_bat"),
+                "Extintor": v.get("fec_venc_extintor"),
+            }
+            for documento, fecha_valor in documentos.items():
+                _alertas_por_fecha(notificaciones, placa, "vehiculo", documento,
+                                   "⚠️", fecha_valor, dias_alerta, hoy)
+
+            # 🛢️ Cambio de aceite por TIEMPO (fecha del último cambio + N meses).
+            meses_aceite = _entero(cfg.get("alerta_aceite_meses"), 6)
+            if meses_aceite > 0:
+                proximo = _sumar_meses(v.get("fec_aceite"), meses_aceite)
+                if proximo:
+                    _alertas_por_fecha(
+                        notificaciones, placa, "vehiculo", "Cambio de Aceite",
+                        "🛢️", proximo, dias_alerta, hoy,
+                        sufijo_titulo="", texto_genero="o")
+
+            # 🛠️ Mantenimiento preventivo por TIEMPO desde el último servicio.
+            meses_general = _entero(cfg.get("alerta_mantenimiento_general_meses"), 6)
+            ultimo_general = _fecha(v.get("fecha_ultimo_general"))
+            if ultimo_general is not None and meses_general > 0:
+                proximo = ultimo_general + timedelta(days=30 * meses_general)
+                _alertas_por_fecha(
+                    notificaciones, placa, "vehiculo", "Mantenimiento Preventivo",
+                    "🛠️", proximo.strftime("%d/%m/%Y"), dias_alerta, hoy,
+                    sufijo_titulo=" · último %s" % ultimo_general.strftime("%d/%m/%Y"))
+
+            # Alertas por KILOMETRAJE (se comparan con el kilometraje actual).
+            km_actual = v.get("kilometraje")
+            _alertas_por_km(notificaciones, placa, "Mantenimiento General", "🛠️",
+                            v.get("km_ultimo_general"), km_actual,
+                            _numero(cfg.get("alerta_mantenimiento_general_km"),
+                                    True) or 0, 1000)
+            _alertas_por_km(notificaciones, placa, "Cambio de Aceite", "🛢️",
+                            v.get("km_ultimo_aceite"), km_actual,
+                            _numero(cfg.get("alerta_aceite_km"), True) or 0, 500)
+            _alertas_por_km(notificaciones, placa, "Mantenimiento de Gas", "💨",
+                            v.get("km_mant_gas"), km_actual,
+                            _numero(cfg.get("alerta_gas_km"), True) or 0, 1000)
+            _alertas_por_km(notificaciones, placa, "Cambio de Neumáticos", "🛞",
+                            v.get("neu_km"), km_actual,
+                            _numero(cfg.get("alerta_neumaticos_km"), True) or 0, 2000)
+
+            # ⚙️ Correa de distribución: el punto de cambio viene dado.
+            km_prox = _numero(v.get("km_prox_correa"))
+            km_hoy = _numero(km_actual)
+            if km_prox is not None and km_hoy is not None:
+                restantes = km_prox - km_hoy
+                if restantes < 0:
+                    notificaciones.append(_alerta(
+                        "peligro", "🚨", "Correa de Distribución Vencida (%s)" % placa,
+                        "Excedido por %s KM." % "{:,.0f}".format(abs(restantes)),
+                        "vehiculo", placa, "Correa de Distribución", "", None,
+                        round(restantes)))
+                elif restantes <= 1000:
+                    notificaciones.append(_alerta(
+                        "alerta", "⚙️", "Correa de Distribución Próxima (%s)" % placa,
+                        "Faltan %s KM." % "{:,.0f}".format(restantes),
+                        "vehiculo", placa, "Correa de Distribución", "", None,
+                        round(restantes)))
+
+        # ---------------- CHOFERES (solo los activos) ----------------
+        existe_cols, existe_filas = _consulta(
+            conn, cursor,
+            "SELECT EXISTS (SELECT FROM information_schema.tables"
+            " WHERE table_name = 'choferes')")
+        hay_tabla = bool(existe_filas and existe_filas[0][0])
+
+        if hay_tabla:
+            columnas, filas = _consulta(
+                conn, cursor,
+                "SELECT %s FROM choferes WHERE estado = 'Activo'" % ", ".join(_COLS_CHOFER))
+            if columnas is None:
+                columnas, filas = _consulta(
+                    conn, cursor,
+                    "SELECT nombres, vencimiento_licencia FROM choferes WHERE estado = 'Activo'")
+            revisados["choferes"] = len(filas or [])
+
+            for fila in (filas or []):
+                c = dict(zip(columnas, fila))
+                nombre = str(c.get("nombres") or "").strip()
+                if not nombre:
+                    continue
+
+                documentos = {
+                    "Licencia": c.get("vencimiento_licencia"),
+                    "Segunda Licencia": c.get("vencimiento_licencia2"),
+                    "Seguro de Salud": c.get("seguro_salud_venc"),
+                    "Seguro Vida Ley": c.get("seguro_vida_venc"),
+                    "Carné de Sanidad": c.get("carnet_sanidad_venc"),
+                    "Fin de Contrato": c.get("fecha_fin_contrato"),
+                }
+                for documento, fecha_valor in documentos.items():
+                    _alertas_por_fecha(notificaciones, nombre, "chofer", documento,
+                                       "⚠️", fecha_valor, dias_alerta, hoy,
+                                       texto_genero="a")
+
+                # 🎂 Cumpleaños: se avisa dentro de la ventana de anticipación.
+                nacimiento = _fecha(c.get("fecha_nacimiento"))
+                if nacimiento is not None:
+                    try:
+                        proximo = nacimiento.replace(year=hoy.year)
+                        if proximo < hoy:
+                            proximo = proximo.replace(year=hoy.year + 1)
+                        dias_restantes = (proximo - hoy).days
+                        if dias_restantes == 0:
+                            notificaciones.append(_alerta(
+                                "alerta", "🎉", "¡Cumpleaños de %s!" % nombre,
+                                "Hoy es su cumpleaños.", "chofer", nombre,
+                                "Cumpleaños", proximo.strftime("%d/%m/%Y"), 0))
+                        elif dias_restantes <= dias_alerta:
+                            notificaciones.append(_alerta(
+                                "alerta", "🎂", "Cumpleaños de %s" % nombre,
+                                "Es en %d días (%s)." % (
+                                    dias_restantes, proximo.strftime("%d/%m")),
+                                "chofer", nombre, "Cumpleaños",
+                                proximo.strftime("%d/%m/%Y"), dias_restantes))
+                    except Exception:
+                        pass
+
+        # Lo más urgente primero: vencidos antes que por vencer, y dentro de
+        # cada grupo, el que está más cerca (o más pasado) de la fecha.
+        notificaciones.sort(key=lambda n: (
+            0 if n["tipo"] == "peligro" else 1,
+            n["dias"] if n["dias"] is not None else 10 ** 6,
+            n["referencia"].lower(),
+        ))
+
+        vencidas = sum(1 for n in notificaciones if n["tipo"] == "peligro")
+        return {
+            "generado": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "dias_alerta": dias_alerta,
+            "revisados": revisados,
+            "resumen": {
+                "total": len(notificaciones),
+                "vencidas": vencidas,
+                "por_vencer": len(notificaciones) - vencidas,
+                "vehiculos": sum(1 for n in notificaciones if n["categoria"] == "vehiculo"),
+                "choferes": sum(1 for n in notificaciones if n["categoria"] == "chofer"),
+            },
+            "notificaciones": notificaciones,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         liberar_conexion(conn)
