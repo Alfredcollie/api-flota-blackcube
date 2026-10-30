@@ -313,6 +313,40 @@ async def listar_vehiculos(username: str = Depends(_obtener_usuario_sesion)):
         liberar_conexion(conn)
 
 
+@app.get("/choferes/")
+async def listar_choferes(username: str = Depends(_obtener_usuario_sesion)):
+    """Lista los choferes activos (DNI + nombre) para elegirlos en la app.
+
+    Se usa en la pantalla de Configuración de "Notificaciones de Flota" para
+    marcar qué choferes se quieren ver. Devuelve solo los datos mínimos.
+    """
+    conn = conectar_db()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Error conectando a la base de datos.")
+    try:
+        cursor = conn.cursor()
+        # La tabla puede no existir en bases muy antiguas: se responde vacío.
+        cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables "
+                       "WHERE table_name = 'choferes')")
+        if not (cursor.fetchone() or [False])[0]:
+            return {"choferes": []}
+        cursor.execute("SELECT dni, nombres FROM choferes "
+                       "WHERE estado = 'Activo' ORDER BY nombres")
+        filas = cursor.fetchall()
+        return {"choferes": [{"dni": str(fila[0] or "").strip(),
+                              "nombre": str(fila[1] or "").strip()}
+                             for fila in filas
+                             if str(fila[1] or "").strip()]}
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        liberar_conexion(conn)
+
+
 # =====================================================================
 # NOTIFICACIONES DE FLOTA (SOLO LECTURA)
 # ---------------------------------------------------------------------
